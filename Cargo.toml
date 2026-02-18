@@ -1,0 +1,25 @@
+[package]
+name = "receipts"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# GUI
+iced = { version = "0.13", features = ["tokio"] }
+
+# ESC/POS protocol with native USB transport
+escpos = { version = "0.17", features = ["native_usb"] }
+
+# USB - direct dependency for hotplug detection
+nusb = "0.2"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+futures = "0.3"
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
