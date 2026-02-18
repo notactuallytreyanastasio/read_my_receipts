@@ -4,6 +4,45 @@
 
 **THIS IS MANDATORY. Log decisions IN REAL-TIME, not retroactively.**
 
+### Available Slash Commands
+
+| Command | Purpose |
+|---------|---------|
+| `/decision` | Manage decision graph - add nodes, link edges, sync |
+| `/recover` | Recover context from decision graph on session start |
+| `/work` | Start a work transaction - creates goal node before implementation |
+| `/document` | Generate comprehensive documentation for a file or directory |
+| `/build-test` | Build the project and run the test suite |
+| `/serve-ui` | Start the decision graph web viewer |
+| `/sync-graph` | Export decision graph to GitHub Pages |
+| `/decision-graph` | Build a decision graph from commit history |
+| `/sync` | Multi-user sync - pull events, rebuild, push |
+
+### Available Skills
+
+| Skill | Purpose |
+|-------|---------|
+| `/pulse` | Map current design as decisions (Now mode) |
+| `/narratives` | Understand how the system evolved (History mode) |
+| `/archaeology` | Transform narratives into queryable graph |
+
+### The Node Flow Rule - CRITICAL
+
+The canonical flow through the decision graph is:
+
+```
+goal -> options -> decision -> actions -> outcomes
+```
+
+- **Goals** lead to **options** (possible approaches to explore)
+- **Options** lead to a **decision** (choosing which option to pursue)
+- **Decisions** lead to **actions** (implementing the chosen approach)
+- **Actions** lead to **outcomes** (results of the implementation)
+- **Observations** attach anywhere relevant
+- Goals do NOT lead directly to decisions -- there must be options first
+- Options do NOT come after decisions -- options come BEFORE decisions
+- Decision nodes should only be created when an option is actually chosen, not prematurely
+
 ### The Core Rule
 
 ```
@@ -18,6 +57,7 @@ AUDIT regularly -> Check for missing connections
 | Trigger | Log Type | Example |
 |---------|----------|---------|
 | User asks for a new feature | `goal` **with -p** | "Add dark mode" |
+| Exploring possible approaches | `option` | "Use Redux for state" |
 | Choosing between approaches | `decision` | "Choose state management" |
 | About to write/edit code | `action` | "Implementing Redux store" |
 | Something worked or failed | `outcome` | "Redux integration successful" |
@@ -67,9 +107,10 @@ Prompts are viewable in the web viewer.
 
 | When you create... | IMMEDIATELY link to... |
 |-------------------|------------------------|
-| `outcome` | The action/goal it resolves |
-| `action` | The goal/decision that spawned it |
-| `option` | Its parent decision |
+| `outcome` | The action that produced it |
+| `action` | The decision that spawned it |
+| `decision` | The option(s) it chose between |
+| `option` | Its parent goal |
 | `observation` | Related goal/action |
 | `revisit` | The decision/outcome being reconsidered |
 
@@ -172,17 +213,17 @@ git status                # Current state
 
 ### Multi-User Sync
 
-Share decisions across teammates:
+Sync decisions with teammates via event logs:
 
 ```bash
-# Export your branch's decisions
-deciduous diff export --branch feature-x -o .deciduous/patches/my-feature.json
+# Check sync status
+deciduous events status
 
-# Apply patches from teammates (idempotent)
-deciduous diff apply .deciduous/patches/*.json
+# Apply teammate events (after git pull)
+deciduous events rebuild
 
-# Preview before applying
-deciduous diff apply --dry-run .deciduous/patches/teammate.json
+# Compact old events periodically
+deciduous events checkpoint --clear-events
 ```
 
-PR workflow: Export patch -> commit patch file -> PR -> teammates apply.
+Events auto-emit on add/link/status commands. Git merges event files automatically.
