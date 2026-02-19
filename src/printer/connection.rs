@@ -1,7 +1,7 @@
+use crate::printer::models::EPSON_VENDOR_ID;
 use escpos::driver::NativeUsbDriver;
 use escpos::printer::Printer;
 use escpos::utils::Protocol;
-use crate::printer::models::EPSON_VENDOR_ID;
 
 pub struct PrinterConnection {
     printer: Printer<NativeUsbDriver>,
@@ -11,8 +11,19 @@ pub struct PrinterConnection {
 
 impl PrinterConnection {
     pub fn open(product_id: u16, model_name: String) -> Result<Self, String> {
-        let driver = NativeUsbDriver::open(EPSON_VENDOR_ID, product_id)
-            .map_err(|e| format!("Failed to open USB device {:04x}:{:04x}: {}", EPSON_VENDOR_ID, product_id, e))?;
+        let driver = NativeUsbDriver::open(EPSON_VENDOR_ID, product_id).map_err(|e| {
+            let err_str = e.to_string();
+            #[cfg(target_os = "macos")]
+            {
+                crate::platform::macos::cups_conflict_hint(product_id, &err_str)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                format!(
+                    "Failed to open USB device {EPSON_VENDOR_ID:04x}:{product_id:04x}: {err_str}"
+                )
+            }
+        })?;
 
         let printer = Printer::new(driver, Protocol::default(), None);
 
@@ -23,24 +34,17 @@ impl PrinterConnection {
         })
     }
 
-    pub fn print_text(&mut self, text: &str, bold: bool, underline: bool, double_size: bool) -> Result<(), String> {
+    pub fn print_rich(
+        &mut self,
+        blocks: &[crate::receipt_markdown::ReceiptBlock],
+        max_chars: u8,
+    ) -> Result<(), String> {
         self.printer.init().map_err(|e| e.to_string())?;
 
-        if bold {
-            self.printer.bold(true).map_err(|e| e.to_string())?;
-        }
-        if underline {
-            self.printer
-                .underline(escpos::utils::UnderlineMode::Single)
-                .map_err(|e| e.to_string())?;
-        }
-        if double_size {
-            self.printer.size(2, 2).map_err(|e| e.to_string())?;
-        }
+        let commands = crate::printer::rich_print::generate_commands(blocks, max_chars);
+        crate::printer::rich_print::execute_commands(&mut self.printer, &commands)?;
 
         self.printer
-            .writeln(text)
-            .map_err(|e| e.to_string())?
             .feeds(3)
             .map_err(|e| e.to_string())?
             .print_cut()
