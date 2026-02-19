@@ -11,9 +11,7 @@ pub struct DiscoveredPrinter {
 }
 
 pub fn scan_for_printers() -> Result<Vec<DiscoveredPrinter>, String> {
-    let devices = nusb::list_devices()
-        .wait()
-        .map_err(|e| e.to_string())?;
+    let devices = nusb::list_devices().wait().map_err(|e| e.to_string())?;
     let mut printers = Vec::new();
 
     for dev in devices {
@@ -29,7 +27,7 @@ pub fn scan_for_printers() -> Result<Vec<DiscoveredPrinter>, String> {
         } else {
             dev.product_string()
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("Epson {:04x}", pid))
+                .unwrap_or_else(|| format!("Epson {pid:04x}"))
         };
 
         tracing::info!(

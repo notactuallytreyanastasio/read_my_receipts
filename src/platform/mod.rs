@@ -1,7 +1,7 @@
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 pub fn check_prerequisites() -> Vec<String> {
     let mut warnings = Vec::new();
