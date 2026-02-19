@@ -11,14 +11,14 @@ pub struct PrinterModel {
 pub static KNOWN_MODELS: &[PrinterModel] = &[
     PrinterModel {
         name: "TM-T88VI",
-        product_ids: &[0x0e15, 0x0e28],
-        max_chars_per_line: 48,
+        product_ids: &[0x0202, 0x0e15, 0x0e28],
+        max_chars_per_line: 42,
         supports_partial_cut: true,
     },
     PrinterModel {
         name: "TM-M50",
         product_ids: &[0x0e36],
-        max_chars_per_line: 48,
+        max_chars_per_line: 42,
         supports_partial_cut: true,
     },
 ];

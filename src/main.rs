@@ -2,6 +2,8 @@ mod app;
 mod error;
 mod platform;
 mod printer;
+mod receipt_markdown;
+mod word_wrap;
 
 use app::App;
 
@@ -18,7 +20,7 @@ fn main() -> iced::Result {
     iced::application(app::title, app::update, app::view)
         .theme(app::theme)
         .subscription(app::subscription)
-        .window_size((600.0, 700.0))
+        .window_size((1100.0, 700.0))
         .centered()
         .run_with(|| {
             let app = App::default();
