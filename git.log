@@ -1,0 +1,16 @@
+git branch backup-pre-phase1-commit
+git add Cargo.toml Cargo.lock src/main.rs src/app.rs src/error.rs src/printer/mod.rs src/printer/models.rs src/printer/discovery.rs src/printer/connection.rs src/printer/status.rs src/platform/mod.rs src/platform/macos.rs src/platform/linux.rs assets/udev/99-epson-receipt.rules .deciduous/deciduous.db
+git commit phase 1
+mkdir .githooks
+git config core.hooksPath .githooks
+cargo fmt
+2026-02-18 19:33:46 cargo test (36 passed)
+2026-02-18 23:18:56 cargo build + cargo test (36 passed) - word wrap preview fix
+2026-02-19 00:13:03 git branch backup-before-incremental-commits
+2026-02-19 00:13:30 cargo fmt
+2026-02-19 00:13:44 git commit: add pulldown-cmark dep
+2026-02-19 00:13:51 git commit: receipt markdown parser
+2026-02-19 00:14:05 git commit: word wrapper
+2026-02-19 00:14:14 git commit: rich print commands
+2026-02-19 00:14:22 git commit: CUPS detection
+2026-02-19 00:14:32 git commit: GUI rewrite + 42-char fix
