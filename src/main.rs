@@ -1,6 +1,7 @@
 mod app;
 mod error;
 mod platform;
+mod poller;
 mod printer;
 mod receipt_markdown;
 mod word_wrap;

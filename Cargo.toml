@@ -5,10 +5,13 @@ edition = "2021"
 
 [dependencies]
 # GUI
-iced = { version = "0.13", features = ["tokio"] }
+iced = { version = "0.13", features = ["tokio", "image"] }
 
-# ESC/POS protocol with native USB transport
-escpos = { version = "0.17", features = ["native_usb"] }
+# ESC/POS protocol with native USB transport + image printing
+escpos = { version = "0.17", features = ["native_usb", "graphics"] }
+
+# Image preprocessing (Floyd-Steinberg dithering for thermal printing)
+image = "0.25"
 
 # USB - direct dependency for hotplug detection
 nusb = "0.2"
@@ -16,6 +19,16 @@ nusb = "0.2"
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
 futures = "0.3"
+
+# HTTP client for blog API polling
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Environment config loading
+dotenvy = "0.15"
 
 # Markdown parsing
 pulldown-cmark = "0.12"

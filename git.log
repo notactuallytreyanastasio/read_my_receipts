@@ -14,3 +14,4 @@ cargo fmt
 2026-02-19 00:14:14 git commit: rich print commands
 2026-02-19 00:14:22 git commit: CUPS detection
 2026-02-19 00:14:32 git commit: GUI rewrite + 42-char fix
+2026-02-19 00:14:39 git commit: deciduous + git.log
