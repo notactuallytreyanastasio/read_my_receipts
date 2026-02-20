@@ -90,16 +90,32 @@ impl PrinterConnection {
     }
 
     /// Print an image using ESC/POS bit image commands.
-    /// Image bytes should be raw image data (PNG, JPEG, etc).
+    /// Resizes to printer width first, then sends to escpos.
     fn print_image(&mut self, image_bytes: &[u8]) -> Result<(), String> {
         use escpos::utils::BitImageOption;
 
-        // TM-T88VI: 576 pixels wide at 203dpi for 80mm paper
+        // Resize to 576px wide before sending — raw web images can be
+        // multi-MB which chokes the printer's limited memory
+        let img = image::load_from_memory(image_bytes)
+            .map_err(|e| format!("Image decode failed: {e}"))?;
+        let resized = img.resize(576, u32::MAX, image::imageops::FilterType::Lanczos3);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        resized
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .map_err(|e| format!("PNG encode failed: {e}"))?;
+        let resized_bytes = buf.into_inner();
+        tracing::info!(
+            "Resized image: {}x{}px, {} bytes",
+            resized.width(),
+            resized.height(),
+            resized_bytes.len()
+        );
+
         let option = BitImageOption::new(Some(576), None, Default::default())
             .map_err(|e| format!("Image option error: {e}"))?;
 
         self.printer
-            .bit_image_from_bytes_option(image_bytes, option)
+            .bit_image_from_bytes_option(&resized_bytes, option)
             .map_err(|e| format!("Image print failed: {e}"))?;
 
         Ok(())
