@@ -246,6 +246,8 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
             Task::perform(
                 async move {
+                    // Brief delay to let macOS fully release USB interface from prior print
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     let mut conn = crate::printer::connection::PrinterConnection::open(
                         printer_info.product_id,
                         printer_info.model_name.clone(),
@@ -511,6 +513,8 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
 
     Task::perform(
         async move {
+            // Brief delay to let macOS fully release USB interface from prior print
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let mut conn = crate::printer::connection::PrinterConnection::open(
                 printer_info.product_id,
                 printer_info.model_name.clone(),

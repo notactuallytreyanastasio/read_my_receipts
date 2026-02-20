@@ -94,11 +94,12 @@ impl PrinterConnection {
     fn print_image(&mut self, image_bytes: &[u8]) -> Result<(), String> {
         use escpos::utils::BitImageOption;
 
-        // Resize to 576px wide before sending — raw web images can be
-        // multi-MB which chokes the printer's limited memory
+        // Resize to 512px wide before sending — raw web images can be multi-MB
+        // which chokes the printer's limited memory. 512px leaves margin for
+        // TM-T88VI's physical non-printable edges on 80mm paper.
         let img = image::load_from_memory(image_bytes)
             .map_err(|e| format!("Image decode failed: {e}"))?;
-        let resized = img.resize(576, u32::MAX, image::imageops::FilterType::Lanczos3);
+        let resized = img.resize(512, u32::MAX, image::imageops::FilterType::Lanczos3);
         let mut buf = std::io::Cursor::new(Vec::new());
         resized
             .write_to(&mut buf, image::ImageFormat::Png)
@@ -111,7 +112,7 @@ impl PrinterConnection {
             resized_bytes.len()
         );
 
-        let option = BitImageOption::new(Some(576), None, Default::default())
+        let option = BitImageOption::new(Some(512), None, Default::default())
             .map_err(|e| format!("Image option error: {e}"))?;
 
         self.printer
