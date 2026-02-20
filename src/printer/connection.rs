@@ -1,7 +1,18 @@
+use std::sync::{Arc, Mutex};
+
 use crate::printer::models::EPSON_VENDOR_ID;
 use escpos::driver::NativeUsbDriver;
 use escpos::printer::Printer;
 use escpos::utils::Protocol;
+
+/// A shared, persistent USB connection. Wraps an optional `PrinterConnection`
+/// behind `Arc<Mutex<>>` so the iced async task pool can use it across prints
+/// without reopening the USB interface each time.
+///
+/// On macOS, the kernel holds the USB interface for ~200ms after close, causing
+/// `kIOReturnExclusiveAccess` on rapid reopen. Keeping the connection open
+/// across prints avoids this entirely.
+pub type SharedConnection = Arc<Mutex<Option<PrinterConnection>>>;
 
 pub struct PrinterConnection {
     printer: Printer<NativeUsbDriver>,
@@ -120,5 +131,76 @@ impl PrinterConnection {
             .map_err(|e| format!("Image print failed: {e}"))?;
 
         Ok(())
+    }
+}
+
+/// Create a new empty shared connection slot.
+pub fn new_shared() -> SharedConnection {
+    Arc::new(Mutex::new(None))
+}
+
+/// Open a USB connection and store it in the shared slot.
+/// If a connection is already open to the same printer, reuses it.
+/// If open to a different printer, closes the old one first.
+pub fn open_shared(
+    shared: &SharedConnection,
+    product_id: u16,
+    model_name: String,
+) -> Result<(), String> {
+    let mut guard = shared.lock().map_err(|e| format!("Lock poisoned: {e}"))?;
+
+    // Already connected to this printer? Keep it.
+    if let Some(ref conn) = *guard {
+        if conn.product_id == product_id {
+            tracing::debug!("Reusing existing USB connection to {model_name}");
+            return Ok(());
+        }
+        tracing::info!("Switching printer — closing old connection");
+    }
+
+    tracing::info!("Opening persistent USB connection to {model_name}");
+    let conn = PrinterConnection::open(product_id, model_name)?;
+    *guard = Some(conn);
+    Ok(())
+}
+
+/// Close the shared connection (e.g., on disconnect or error).
+pub fn close_shared(shared: &SharedConnection) {
+    if let Ok(mut guard) = shared.lock() {
+        if guard.is_some() {
+            tracing::info!("Closing persistent USB connection");
+            *guard = None;
+        }
+    }
+}
+
+/// Print using the shared connection. Opens a new connection if needed.
+/// On USB error, clears the connection so the next call will reopen.
+pub fn print_with_shared(
+    shared: &SharedConnection,
+    product_id: u16,
+    model_name: String,
+    f: impl FnOnce(&mut PrinterConnection) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut guard = shared.lock().map_err(|e| format!("Lock poisoned: {e}"))?;
+
+    // Open connection if not already open (or if it was cleared after an error)
+    if guard.is_none() {
+        tracing::info!("No active connection — opening USB to {model_name}");
+        let conn = PrinterConnection::open(product_id, model_name.clone())?;
+        *guard = Some(conn);
+    }
+
+    let conn = guard.as_mut().unwrap();
+
+    match f(conn) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // USB error — connection is likely broken. Close it so next
+            // print attempt will reopen fresh.
+            tracing::warn!("Print failed, closing connection for recovery: {e}");
+            *guard = None;
+            Err(e)
+        }
     }
 }

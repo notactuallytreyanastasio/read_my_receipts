@@ -7,6 +7,7 @@ use iced::widget::{
 use iced::{font, time, Color, Element, Font, Length, Subscription, Task, Theme};
 
 use crate::poller::{self, PollEvent, PollerConfig, ReceiptMessage};
+use crate::printer::connection::{self, SharedConnection};
 use crate::printer::discovery::{self, DiscoveredPrinter};
 use crate::printer::models::{find_known_model, EPSON_VENDOR_ID};
 use crate::receipt_markdown::{Alignment, ReceiptBlock};
@@ -68,6 +69,9 @@ pub struct App {
     printing: bool,
     show_help: bool,
     show_messages_panel: bool,
+    // Persistent USB connection — stays open across prints to avoid
+    // macOS kIOReturnExclusiveAccess errors from rapid open/close cycles
+    shared_conn: SharedConnection,
     // Poller state
     poller_config: Option<PollerConfig>,
     poller_enabled: bool,
@@ -102,6 +106,7 @@ pub enum Message {
         result: Result<Vec<u8>, String>,
     },
     ToggleMessagesPanel,
+    ConnectionOpened(Result<(), String>),
 }
 
 fn current_max_chars(app: &App) -> u8 {
@@ -110,6 +115,18 @@ fn current_max_chars(app: &App) -> u8 {
         .and_then(|p| find_known_model(EPSON_VENDOR_ID, p.product_id))
         .map(|m| m.max_chars_per_line)
         .unwrap_or(42)
+}
+
+/// Eagerly open a persistent USB connection in the background.
+/// Called when a printer is first discovered or when the user selects a different one.
+fn open_connection_async(app: &App, printer_info: &DiscoveredPrinter) -> Task<Message> {
+    let shared = app.shared_conn.clone();
+    let product_id = printer_info.product_id;
+    let model_name = printer_info.model_name.clone();
+    Task::perform(
+        async move { connection::open_shared(&shared, product_id, model_name) },
+        Message::ConnectionOpened,
+    )
 }
 
 fn reparse(app: &mut App) {
@@ -147,6 +164,7 @@ impl Default for App {
             printing: false,
             show_help: false,
             show_messages_panel: false,
+            shared_conn: connection::new_shared(),
             poller_config,
             poller_enabled,
             poller_status,
@@ -183,6 +201,8 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                     if printers.is_empty() {
                         app.status = ConnectionStatus::Disconnected;
                         app.selected_printer = None;
+                        // No printers — close any stale connection
+                        connection::close_shared(&app.shared_conn);
                     } else {
                         let first = &printers[0];
                         app.status = ConnectionStatus::Connected {
@@ -197,25 +217,39 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                     app.status = ConnectionStatus::Error(e);
                     app.discovered.clear();
                     app.selected_printer = None;
+                    connection::close_shared(&app.shared_conn);
                 }
             }
             reparse(app);
+
+            // Eagerly open USB connection to the selected printer
+            if let Some(idx) = app.selected_printer {
+                if let Some(printer_info) = app.discovered.get(idx) {
+                    return open_connection_async(app, printer_info);
+                }
+            }
             Task::none()
         }
 
         Message::SelectPrinter(idx) => {
-            if let Some(printer) = app.discovered.get(idx) {
+            if let Some(printer) = app.discovered.get(idx).cloned() {
                 app.selected_printer = Some(idx);
                 app.status = ConnectionStatus::Connected {
                     model: printer.model_name.clone(),
                     serial: printer.serial.clone(),
                 };
+                reparse(app);
+                // Open connection to newly selected printer (closes old if different)
+                return open_connection_async(app, &printer);
             }
             reparse(app);
             Task::none()
         }
 
         Message::HotplugEvent => {
+            // Close the persistent connection — the device may have been
+            // unplugged. The PrintersFound handler will reopen if still present.
+            connection::close_shared(&app.shared_conn);
             app.status = ConnectionStatus::Scanning;
             Task::perform(
                 async { discovery::scan_for_printers() },
@@ -243,16 +277,16 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
             let blocks = app.parsed_blocks.clone();
             let max_chars = current_max_chars(app);
+            let shared = app.shared_conn.clone();
 
             Task::perform(
                 async move {
-                    // Brief delay to let macOS fully release USB interface from prior print
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let mut conn = crate::printer::connection::PrinterConnection::open(
+                    connection::print_with_shared(
+                        &shared,
                         printer_info.product_id,
                         printer_info.model_name.clone(),
-                    )?;
-                    conn.print_rich(&blocks, max_chars)
+                        |conn| conn.print_rich(&blocks, max_chars),
+                    )
                 },
                 Message::PrintResult,
             )
@@ -402,6 +436,19 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             app.show_messages_panel = !app.show_messages_panel;
             Task::none()
         }
+
+        Message::ConnectionOpened(result) => {
+            match result {
+                Ok(()) => {
+                    tracing::info!("Persistent USB connection ready");
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to open persistent USB connection: {e}");
+                    // Don't set error status — prints will try to open on demand
+                }
+            }
+            Task::none()
+        }
     }
 }
 
@@ -510,16 +557,16 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
     let message_id = job.message_id;
     let blocks = job.blocks;
     let image_bytes = job.image_bytes;
+    let shared = app.shared_conn.clone();
 
     Task::perform(
         async move {
-            // Brief delay to let macOS fully release USB interface from prior print
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let mut conn = crate::printer::connection::PrinterConnection::open(
+            connection::print_with_shared(
+                &shared,
                 printer_info.product_id,
                 printer_info.model_name.clone(),
-            )?;
-            conn.print_website_message(&blocks, max_chars, image_bytes.as_deref())
+                |conn| conn.print_website_message(&blocks, max_chars, image_bytes.as_deref()),
+            )
         },
         move |result| Message::PrintMessageResult { message_id, result },
     )
