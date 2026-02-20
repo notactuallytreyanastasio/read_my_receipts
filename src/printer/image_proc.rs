@@ -1,7 +1,7 @@
 use image::{DynamicImage, GrayImage};
 
-/// TM-T88VI: 576 pixels wide at 203dpi for 80mm paper.
-const PRINTER_WIDTH_PX: u32 = 576;
+/// 512px wide — leaves margin for TM-T88VI's non-printable edges on 80mm paper.
+const PRINTER_WIDTH_PX: u32 = 512;
 
 /// Preprocess an image for thermal printing:
 /// 1. Decode from raw bytes (PNG, JPEG, etc.)
@@ -38,6 +38,13 @@ pub fn preprocess_for_thermal(raw_bytes: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("PNG encode failed: {e}"))?;
 
     Ok(buf.into_inner())
+}
+
+/// Apply gamma correction + Floyd-Steinberg dithering in-place on a grayscale image.
+/// Call this on an already-resized `GrayImage` before encoding to PNG for escpos.
+pub fn dither_for_thermal(img: &mut GrayImage) {
+    apply_gamma(img, 1.5);
+    floyd_steinberg_dither(img);
 }
 
 /// Apply gamma correction to lighten midtones.

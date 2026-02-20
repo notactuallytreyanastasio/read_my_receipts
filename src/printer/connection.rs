@@ -101,33 +101,37 @@ impl PrinterConnection {
     }
 
     /// Print an image using ESC/POS bit image commands.
-    /// Resizes to printer width first, then sends to escpos.
+    /// Resizes, applies gamma + Floyd-Steinberg dithering, then sends to printer.
     fn print_image(&mut self, image_bytes: &[u8]) -> Result<(), String> {
         use escpos::utils::BitImageOption;
 
-        // Resize to 512px wide before sending — raw web images can be multi-MB
-        // which chokes the printer's limited memory. 512px leaves margin for
-        // TM-T88VI's physical non-printable edges on 80mm paper.
         let img = image::load_from_memory(image_bytes)
             .map_err(|e| format!("Image decode failed: {e}"))?;
         let resized = img.resize(512, u32::MAX, image::imageops::FilterType::Lanczos3);
+
+        // Grayscale → gamma correction → Floyd-Steinberg dither
+        let mut gray = resized.to_luma8();
+        crate::printer::image_proc::dither_for_thermal(&mut gray);
+
+        // Re-encode as PNG for escpos
+        let dithered = image::DynamicImage::ImageLuma8(gray);
         let mut buf = std::io::Cursor::new(Vec::new());
-        resized
+        dithered
             .write_to(&mut buf, image::ImageFormat::Png)
             .map_err(|e| format!("PNG encode failed: {e}"))?;
-        let resized_bytes = buf.into_inner();
+        let processed = buf.into_inner();
         tracing::info!(
-            "Resized image: {}x{}px, {} bytes",
-            resized.width(),
-            resized.height(),
-            resized_bytes.len()
+            "Dithered image: {}x{}px, {} bytes",
+            dithered.width(),
+            dithered.height(),
+            processed.len()
         );
 
         let option = BitImageOption::new(Some(512), None, Default::default())
             .map_err(|e| format!("Image option error: {e}"))?;
 
         self.printer
-            .bit_image_from_bytes_option(&resized_bytes, option)
+            .bit_image_from_bytes_option(&processed, option)
             .map_err(|e| format!("Image print failed: {e}"))?;
 
         Ok(())
