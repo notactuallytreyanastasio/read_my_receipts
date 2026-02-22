@@ -13,6 +13,12 @@ use crate::printer::models::{find_known_model, EPSON_VENDOR_ID};
 use crate::receipt_markdown::{Alignment, ReceiptBlock};
 use crate::word_wrap::{wrap_document, WrappedLine};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    Desktop,
+    Kiosk,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Disconnected,
@@ -82,6 +88,11 @@ pub struct App {
     // Upload server state
     upload_server_enabled: bool,
     upload_photo_count: u32,
+    // Display mode
+    display_mode: DisplayMode,
+    // Kiosk: latest received message formatted for display
+    kiosk_display_blocks: Vec<ReceiptBlock>,
+    kiosk_display_lines: Vec<WrappedLine>,
 }
 
 #[derive(Debug, Clone)]
@@ -141,8 +152,8 @@ fn reparse(app: &mut App) {
     app.wrapped_lines = wrap_document(&app.parsed_blocks, max_chars);
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    pub fn new(mode: DisplayMode) -> Self {
         let poller_config = poller::config::load_config().ok();
         let poller_enabled = poller_config.is_some();
         let poller_status = if poller_config.is_some() {
@@ -178,7 +189,16 @@ impl Default for App {
             messages_printed_count: 0,
             upload_server_enabled: true,
             upload_photo_count: 0,
+            display_mode: mode,
+            kiosk_display_blocks: Vec::new(),
+            kiosk_display_lines: Vec::new(),
         }
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new(DisplayMode::Desktop)
     }
 }
 
@@ -228,6 +248,10 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
             }
             reparse(app);
+            if app.display_mode == DisplayMode::Kiosk && !app.kiosk_display_blocks.is_empty() {
+                let max_chars = current_max_chars(app);
+                app.kiosk_display_lines = wrap_document(&app.kiosk_display_blocks, max_chars);
+            }
 
             // Eagerly open USB connection to the selected printer
             if let Some(idx) = app.selected_printer {
@@ -246,6 +270,10 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                     serial: printer.serial.clone(),
                 };
                 reparse(app);
+                if app.display_mode == DisplayMode::Kiosk && !app.kiosk_display_blocks.is_empty() {
+                    let max_chars = current_max_chars(app);
+                    app.kiosk_display_lines = wrap_document(&app.kiosk_display_blocks, max_chars);
+                }
                 // Open connection to newly selected printer (closes old if different)
                 return open_connection_async(app, &printer);
             }
@@ -516,6 +544,13 @@ fn handle_received_messages(app: &mut App, messages: Vec<ReceiptMessage>) -> Tas
         // Format text blocks
         let blocks = poller::format::format_message(&msg);
 
+        // Update kiosk display with the latest message
+        if app.display_mode == DisplayMode::Kiosk {
+            app.kiosk_display_blocks = blocks.clone();
+            let max_chars = current_max_chars(app);
+            app.kiosk_display_lines = wrap_document(&app.kiosk_display_blocks, max_chars);
+        }
+
         app.received_messages.push(ReceivedMessage {
             id: msg.id,
             sender,
@@ -636,6 +671,82 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
+    match app.display_mode {
+        DisplayMode::Desktop => desktop_view(app),
+        DisplayMode::Kiosk => kiosk_view(app),
+    }
+}
+
+fn kiosk_view(app: &App) -> Element<'_, Message> {
+    let lines: Vec<Element<'_, Message>> = if app.kiosk_display_lines.is_empty() {
+        // Idle state — show minimal status
+        let mut idle: Vec<Element<'_, Message>> = Vec::new();
+
+        let (status_text, status_color) = match &app.status {
+            ConnectionStatus::Connected { model, .. } => {
+                (model.clone(), Color::from_rgb(0.20, 0.78, 0.35))
+            }
+            ConnectionStatus::Scanning => {
+                ("Scanning...".into(), Color::from_rgb(0.55, 0.55, 0.58))
+            }
+            ConnectionStatus::Disconnected => {
+                ("No printer".into(), Color::from_rgb(0.55, 0.55, 0.58))
+            }
+            ConnectionStatus::Error(e) => {
+                (format!("Error: {e}"), Color::from_rgb(1.0, 0.23, 0.19))
+            }
+        };
+        idle.push(text(status_text).size(10).color(status_color).into());
+
+        let poller_text = match &app.poller_status {
+            PollerStatus::Polling => "Waiting for messages...",
+            PollerStatus::Connecting => "Connecting...",
+            PollerStatus::Error(_) => "Poll error",
+            PollerStatus::Disabled => "Poller disabled",
+        };
+        idle.push(
+            text(poller_text)
+                .size(9)
+                .color(Color::from_rgb(0.55, 0.55, 0.58))
+                .into(),
+        );
+
+        if app.messages_printed_count > 0 {
+            idle.push(
+                text(format!("{} printed", app.messages_printed_count))
+                    .size(9)
+                    .color(Color::from_rgb(0.55, 0.55, 0.58))
+                    .into(),
+            );
+        }
+
+        idle
+    } else {
+        app.kiosk_display_lines
+            .iter()
+            .map(build_preview_line)
+            .collect()
+    };
+
+    let content = column(lines).spacing(1).padding(4).width(Length::Fill);
+
+    container(
+        scrollable(
+            container(content)
+                .width(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(Color::WHITE.into()),
+                    ..Default::default()
+                }),
+        )
+        .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn desktop_view(app: &App) -> Element<'_, Message> {
     // Status bar
     let status_text = match &app.status {
         ConnectionStatus::Disconnected => String::from("No printer connected"),
