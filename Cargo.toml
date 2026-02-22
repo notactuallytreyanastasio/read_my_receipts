@@ -23,6 +23,9 @@ futures = "0.3"
 # HTTP client for blog API polling
 reqwest = { version = "0.12", features = ["json"] }
 
+# HTTP upload server (iPhone → Pi photo transfer)
+axum = { version = "0.8", features = ["multipart"] }
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

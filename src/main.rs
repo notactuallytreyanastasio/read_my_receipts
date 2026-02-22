@@ -4,6 +4,7 @@ mod platform;
 mod poller;
 mod printer;
 mod receipt_markdown;
+mod upload_server;
 mod word_wrap;
 
 use app::App;

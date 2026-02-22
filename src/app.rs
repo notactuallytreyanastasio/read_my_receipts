@@ -79,6 +79,9 @@ pub struct App {
     received_messages: Vec<ReceivedMessage>,
     print_queue: Vec<QueuedPrint>,
     messages_printed_count: u32,
+    // Upload server state
+    upload_server_enabled: bool,
+    upload_photo_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +110,8 @@ pub enum Message {
     },
     ToggleMessagesPanel,
     ConnectionOpened(Result<(), String>),
+    // Upload server messages
+    UploadEvent(crate::upload_server::subscription::UploadEvent),
 }
 
 fn current_max_chars(app: &App) -> u8 {
@@ -171,6 +176,8 @@ impl Default for App {
             received_messages: Vec::new(),
             print_queue: Vec::new(),
             messages_printed_count: 0,
+            upload_server_enabled: true,
+            upload_photo_count: 0,
         }
     }
 }
@@ -364,20 +371,24 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
             }
 
-            // Fire-and-forget: mark on the blog API
-            let mark_task = if let Some(config) = app.poller_config.clone() {
-                let is_ok = result.is_ok();
-                Task::perform(
-                    async move {
-                        let client = reqwest::Client::new();
-                        if is_ok {
-                            poller::client::mark_printed(&client, &config, message_id).await
-                        } else {
-                            poller::client::mark_failed(&client, &config, message_id).await
-                        }
-                    },
-                    Message::MarkResult,
-                )
+            // Fire-and-forget: mark on the blog API (skip for upload prints with negative IDs)
+            let mark_task = if message_id > 0 {
+                if let Some(config) = app.poller_config.clone() {
+                    let is_ok = result.is_ok();
+                    Task::perform(
+                        async move {
+                            let client = reqwest::Client::new();
+                            if is_ok {
+                                poller::client::mark_printed(&client, &config, message_id).await
+                            } else {
+                                poller::client::mark_failed(&client, &config, message_id).await
+                            }
+                        },
+                        Message::MarkResult,
+                    )
+                } else {
+                    Task::none()
+                }
             } else {
                 Task::none()
             };
@@ -448,6 +459,29 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
             }
             Task::none()
+        }
+
+        Message::UploadEvent(event) => {
+            use crate::upload_server::subscription::UploadEvent;
+            match event {
+                UploadEvent::Started(addr) => {
+                    tracing::info!("Upload server listening on {addr}");
+                    Task::none()
+                }
+                UploadEvent::PhotoReceived(image_bytes) => {
+                    app.upload_photo_count += 1;
+                    tracing::info!(
+                        "Photo upload #{}: {} bytes",
+                        app.upload_photo_count,
+                        image_bytes.len()
+                    );
+                    handle_photo_upload(app, image_bytes)
+                }
+                UploadEvent::Error(e) => {
+                    tracing::error!("Upload server error: {e}");
+                    Task::none()
+                }
+            }
         }
     }
 }
@@ -524,6 +558,35 @@ fn handle_received_messages(app: &mut App, messages: Vec<ReceiptMessage>) -> Tas
 
     // If there are only image messages and none are printing yet, downloads will trigger printing
     Task::batch(download_tasks)
+}
+
+/// Handle a photo received via the upload server.
+/// Queues it for printing with a minimal header.
+fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
+    use crate::receipt_markdown::ReceiptSpan;
+
+    let blocks = vec![
+        ReceiptBlock::Divider,
+        ReceiptBlock::Heading {
+            spans: vec![ReceiptSpan::heading("PHOTO")],
+        },
+        ReceiptBlock::Divider,
+        ReceiptBlock::BlankLine,
+    ];
+
+    let message_id = -(app.upload_photo_count as i64);
+
+    app.print_queue.push(QueuedPrint {
+        message_id,
+        blocks,
+        image_bytes: Some(raw_bytes),
+    });
+
+    if !app.printing {
+        try_print_next_queued(app)
+    } else {
+        Task::none()
+    }
 }
 
 /// Pop the next queued print job and start it.
@@ -1176,6 +1239,18 @@ pub fn subscription(app: &App) -> Subscription<Message> {
                 .map(Message::PollEvent),
             );
         }
+    }
+
+    if app.upload_server_enabled {
+        let port = std::env::var("UPLOAD_PORT").unwrap_or_else(|_| "80".to_string());
+        let bind_addr = format!("0.0.0.0:{port}");
+        subs.push(
+            Subscription::run_with_id(
+                "upload-server",
+                crate::upload_server::subscription::upload_server(bind_addr),
+            )
+            .map(Message::UploadEvent),
+        );
     }
 
     Subscription::batch(subs)
