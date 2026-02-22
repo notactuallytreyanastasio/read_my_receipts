@@ -1,0 +1,12 @@
+FROM --platform=linux/arm64 rust:1-bookworm
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libusb-1.0-0-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+
+RUN cargo build 2>&1
