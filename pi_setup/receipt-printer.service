@@ -1,15 +1,17 @@
 [Unit]
 Description=Receipt Printer (GUI + Upload Server)
-After=network.target
+After=network.target xvfb.service
 
 [Service]
 Type=simple
 User=pi
-Environment=DISPLAY=:0
+Environment=DISPLAY=:99
 Environment=UPLOAD_PORT=80
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 WorkingDirectory=/home/pi/read_my_receipts
-ExecStart=/home/pi/read_my_receipts/target/release/receipts
+ExecStartPre=/usr/bin/bash -c 'pgrep -x Xvfb || /usr/bin/Xvfb :99 -screen 0 320x480x24 &'
+ExecStartPre=/usr/bin/sleep 1
+ExecStart=/home/pi/read_my_receipts/target/debug/receipts
 Restart=on-failure
 RestartSec=5
 

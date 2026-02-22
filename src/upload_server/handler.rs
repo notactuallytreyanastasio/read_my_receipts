@@ -44,9 +44,16 @@ async fn upload(State(state): State<UploadState>, mut multipart: Multipart) -> i
     (StatusCode::BAD_REQUEST, "No 'image' field found".to_string())
 }
 
-/// Captive portal: return redirect to / so iOS shows the popup
-async fn captive_redirect() -> Redirect {
-    Redirect::temporary("/")
+/// iOS captive portal check: return "Success" so iOS thinks the network
+/// has internet and dismisses the captive portal mini-browser.
+/// The user then opens Safari to http://192.168.4.1 for the real page.
+async fn captive_success() -> Html<&'static str> {
+    Html("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>")
+}
+
+/// Android captive portal check
+async fn generate_204() -> StatusCode {
+    StatusCode::NO_CONTENT
 }
 
 pub fn build_router(tx: mpsc::Sender<Vec<u8>>) -> Router {
@@ -54,8 +61,10 @@ pub fn build_router(tx: mpsc::Sender<Vec<u8>>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/print/upload", post(upload))
-        .route("/hotspot-detect.html", get(captive_redirect))
-        .fallback(get(captive_redirect))
+        .route("/hotspot-detect.html", get(captive_success))
+        .route("/library/test/success.html", get(captive_success))
+        .route("/generate_204", get(generate_204))
+        .fallback(get(index))
         .layer(DefaultBodyLimit::max(15 * 1024 * 1024))
         .with_state(state)
 }
