@@ -5,9 +5,9 @@ const PRINTER_WIDTH_PX: u32 = 512;
 
 /// Preprocess an image for thermal printing:
 /// 1. Decode from raw bytes (PNG, JPEG, etc.)
-/// 2. Resize to printer width (576px), maintaining aspect ratio
+/// 2. Resize to printer width (512px), maintaining aspect ratio
 /// 3. Convert to grayscale
-/// 4. Apply gamma correction to lighten midtones (thermal printers darken)
+/// 4. Adaptive contrast + gamma based on image brightness
 /// 5. Floyd-Steinberg dithering to 1-bit
 /// 6. Re-encode as PNG for escpos bit_image_from_bytes_option
 pub fn preprocess_for_thermal(raw_bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -24,12 +24,8 @@ pub fn preprocess_for_thermal(raw_bytes: &[u8]) -> Result<Vec<u8>, String> {
     // Convert to grayscale
     let mut gray = img.to_luma8();
 
-    // Full thermal preprocessing pipeline
-    auto_levels(&mut gray);
-    apply_contrast(&mut gray, 1.4);
-    apply_gamma(&mut gray, 1.15);
-    unsharp_mask(&mut gray, 0.5);
-    floyd_steinberg_dither(&mut gray);
+    // Full thermal preprocessing pipeline (adaptive)
+    thermal_pipeline(&mut gray);
 
     // Re-encode as PNG
     let dithered = DynamicImage::ImageLuma8(gray);
@@ -41,14 +37,47 @@ pub fn preprocess_for_thermal(raw_bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buf.into_inner())
 }
 
-/// Full thermal print preprocessing: contrast enhance → gamma → sharpen → dither.
+/// Full thermal print preprocessing: auto-levels → adaptive contrast/gamma → sharpen → dither.
 /// Call this on an already-resized `GrayImage` before encoding to PNG for escpos.
 pub fn dither_for_thermal(img: &mut GrayImage) {
+    thermal_pipeline(img);
+}
+
+/// Adaptive thermal pipeline. Measures brightness after auto-levels to choose
+/// contrast and gamma parameters — dark images get gentler contrast and more
+/// aggressive gamma lift so shadow detail survives dithering.
+fn thermal_pipeline(img: &mut GrayImage) {
     auto_levels(img);
-    apply_contrast(img, 1.4);
-    apply_gamma(img, 1.15);
+
+    let mean = mean_brightness(img);
+    let (contrast, gamma) = if mean < 90 {
+        // Dark image: go easy on contrast, aggressively lift midtones
+        (1.1_f32, 1.5_f32)
+    } else if mean < 130 {
+        // Medium image: moderate boost
+        (1.25, 1.3)
+    } else {
+        // Normal/bright image: original behavior
+        (1.4, 1.15)
+    };
+    tracing::debug!(
+        "Thermal pipeline: mean brightness={mean}, contrast={contrast}, gamma={gamma}"
+    );
+
+    apply_contrast(img, contrast);
+    apply_gamma(img, gamma);
     unsharp_mask(img, 0.5);
     floyd_steinberg_dither(img);
+}
+
+/// Average pixel brightness (0–255).
+fn mean_brightness(img: &GrayImage) -> u8 {
+    let total: u64 = img.pixels().map(|p| p[0] as u64).sum();
+    let count = (img.width() as u64) * (img.height() as u64);
+    if count == 0 {
+        return 128;
+    }
+    (total / count) as u8
 }
 
 /// Stretch histogram so 2nd–98th percentile maps to 0–255.
@@ -260,6 +289,43 @@ mod tests {
         for pixel in img.pixels() {
             assert_eq!(pixel[0], 0);
         }
+    }
+
+    #[test]
+    fn mean_brightness_correct() {
+        let img = GrayImage::from_pixel(10, 10, image::Luma([100u8]));
+        assert_eq!(mean_brightness(&img), 100);
+    }
+
+    #[test]
+    fn dark_image_gets_more_gamma_lift() {
+        // Dark image (mean 60 after auto-levels — stays 60 since it's uniform)
+        let mut dark = GrayImage::from_pixel(100, 100, image::Luma([60u8]));
+        // Bright image (mean 180)
+        let mut bright = GrayImage::from_pixel(100, 100, image::Luma([180u8]));
+
+        // Apply just the contrast+gamma portion (skip auto_levels since uniform
+        // images return unchanged, and skip dither for comparison)
+        let dark_mean = mean_brightness(&dark);
+        let bright_mean = mean_brightness(&bright);
+
+        let (dc, dg) = if dark_mean < 90 { (1.1_f32, 1.5_f32) } else { (1.4, 1.15) };
+        let (bc, bg) = if bright_mean < 90 { (1.1_f32, 1.5_f32) } else { (1.4, 1.15) };
+
+        apply_contrast(&mut dark, dc);
+        apply_gamma(&mut dark, dg);
+        apply_contrast(&mut bright, bc);
+        apply_gamma(&mut bright, bg);
+
+        // Dark image pixel should have been lifted more aggressively
+        // With (1.1, 1.5): 60 → contrast → ~53 → gamma 1.5 → ~100
+        // With (1.4, 1.15): 60 → contrast → ~33 → gamma 1.15 → ~44
+        // So the dark-adapted path produces brighter output
+        assert!(
+            dark.get_pixel(0, 0)[0] > 80,
+            "Dark image pixel should be lifted above 80, got {}",
+            dark.get_pixel(0, 0)[0]
+        );
     }
 
     #[test]
