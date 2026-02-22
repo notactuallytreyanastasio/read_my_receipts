@@ -107,6 +107,10 @@ impl PrinterConnection {
 
         let img = image::load_from_memory(image_bytes)
             .map_err(|e| format!("Image decode failed: {e}"))?;
+
+        // Rotate 90° clockwise so portrait photos print upright on receipt paper
+        let img = img.rotate90();
+
         let resized = img.resize(512, u32::MAX, image::imageops::FilterType::Lanczos3);
 
         // Grayscale → gamma correction → Floyd-Steinberg dither

@@ -24,10 +24,11 @@ pub fn preprocess_for_thermal(raw_bytes: &[u8]) -> Result<Vec<u8>, String> {
     // Convert to grayscale
     let mut gray = img.to_luma8();
 
-    // Gamma correction — lighten midtones for thermal printer
-    apply_gamma(&mut gray, 1.8);
-
-    // Floyd-Steinberg dithering
+    // Full thermal preprocessing pipeline
+    auto_levels(&mut gray);
+    apply_contrast(&mut gray, 1.4);
+    apply_gamma(&mut gray, 1.15);
+    unsharp_mask(&mut gray, 0.5);
     floyd_steinberg_dither(&mut gray);
 
     // Re-encode as PNG
@@ -40,11 +41,111 @@ pub fn preprocess_for_thermal(raw_bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(buf.into_inner())
 }
 
-/// Apply gamma correction + Floyd-Steinberg dithering in-place on a grayscale image.
+/// Full thermal print preprocessing: contrast enhance → gamma → sharpen → dither.
 /// Call this on an already-resized `GrayImage` before encoding to PNG for escpos.
 pub fn dither_for_thermal(img: &mut GrayImage) {
-    apply_gamma(img, 1.5);
+    auto_levels(img);
+    apply_contrast(img, 1.4);
+    apply_gamma(img, 1.15);
+    unsharp_mask(img, 0.5);
     floyd_steinberg_dither(img);
+}
+
+/// Stretch histogram so 2nd–98th percentile maps to 0–255.
+/// Expands tonal range for images that don't use the full brightness spectrum.
+fn auto_levels(img: &mut GrayImage) {
+    let mut histogram = [0u32; 256];
+    for pixel in img.pixels() {
+        histogram[pixel[0] as usize] += 1;
+    }
+
+    let total = img.width() * img.height();
+    let low_cutoff = (total as f32 * 0.02) as u32;
+    let high_cutoff = (total as f32 * 0.98) as u32;
+
+    // Find 2nd percentile
+    let mut cumulative = 0u32;
+    let mut low = 0u8;
+    for (i, &count) in histogram.iter().enumerate() {
+        cumulative += count;
+        if cumulative >= low_cutoff {
+            low = i as u8;
+            break;
+        }
+    }
+
+    // Find 98th percentile
+    cumulative = 0;
+    let mut high = 255u8;
+    for (i, &count) in histogram.iter().enumerate() {
+        cumulative += count;
+        if cumulative >= high_cutoff {
+            high = i as u8;
+            break;
+        }
+    }
+
+    if high <= low {
+        return; // Image is essentially flat, nothing to stretch
+    }
+
+    // Build LUT to stretch [low, high] → [0, 255]
+    let range = (high - low) as f32;
+    let lut: Vec<u8> = (0..=255u16)
+        .map(|v| {
+            if v <= low as u16 {
+                0
+            } else if v >= high as u16 {
+                255
+            } else {
+                ((v as f32 - low as f32) / range * 255.0).round() as u8
+            }
+        })
+        .collect();
+
+    for pixel in img.pixels_mut() {
+        pixel[0] = lut[pixel[0] as usize];
+    }
+}
+
+/// Apply contrast adjustment. factor > 1.0 increases contrast, < 1.0 decreases.
+/// Pivots around 128 (midgray).
+fn apply_contrast(img: &mut GrayImage, factor: f32) {
+    let lut: Vec<u8> = (0..=255u16)
+        .map(|v| {
+            let centered = v as f32 - 128.0;
+            let adjusted = centered * factor + 128.0;
+            adjusted.round().clamp(0.0, 255.0) as u8
+        })
+        .collect();
+
+    for pixel in img.pixels_mut() {
+        pixel[0] = lut[pixel[0] as usize];
+    }
+}
+
+/// Simple 3x3 unsharp mask to preserve edges before dithering.
+/// amount controls sharpening strength (0.0 = none, 1.0 = full).
+fn unsharp_mask(img: &mut GrayImage, amount: f32) {
+    let width = img.width() as i32;
+    let height = img.height() as i32;
+    let src: Vec<u8> = img.pixels().map(|p| p[0]).collect();
+
+    for y in 1..height - 1 {
+        for x in 1..width - 1 {
+            // 3x3 box blur for the pixel neighborhood
+            let mut sum = 0i32;
+            for dy in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    sum += src[((y + dy) * width + (x + dx)) as usize] as i32;
+                }
+            }
+            let blurred = sum / 9;
+            let original = src[(y * width + x) as usize] as i32;
+            let sharpened = original as f32 + (original - blurred) as f32 * amount;
+            img.get_pixel_mut(x as u32, y as u32)[0] = sharpened.round().clamp(0.0, 255.0) as u8;
+        }
+    }
 }
 
 /// Apply gamma correction to lighten midtones.
@@ -111,7 +212,7 @@ mod tests {
     #[test]
     fn gamma_lightens_midtones() {
         let mut img = GrayImage::from_pixel(2, 2, image::Luma([128u8]));
-        apply_gamma(&mut img, 1.8);
+        apply_gamma(&mut img, 1.15);
         // Gamma > 1.0 should lighten midtones (128 → higher value)
         assert!(img.get_pixel(0, 0)[0] > 128);
     }
@@ -121,7 +222,7 @@ mod tests {
         let mut img = GrayImage::new(2, 1);
         img.put_pixel(0, 0, image::Luma([0u8]));
         img.put_pixel(1, 0, image::Luma([255u8]));
-        apply_gamma(&mut img, 1.8);
+        apply_gamma(&mut img, 1.15);
         assert_eq!(img.get_pixel(0, 0)[0], 0);
         assert_eq!(img.get_pixel(1, 0)[0], 255);
     }
