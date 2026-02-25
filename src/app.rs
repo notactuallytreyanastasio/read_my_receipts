@@ -505,6 +505,10 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                     );
                     handle_photo_upload(app, image_bytes)
                 }
+                UploadEvent::TextReceived { text, source } => {
+                    tracing::info!("Text print received: {} bytes (source={})", text.len(), source);
+                    handle_text_print(app, text, &source)
+                }
                 UploadEvent::Error(e) => {
                     tracing::error!("Upload server error: {e}");
                     Task::none()
@@ -615,6 +619,44 @@ fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
         message_id,
         blocks,
         image_bytes: Some(raw_bytes),
+    });
+
+    if !app.printing {
+        try_print_next_queued(app)
+    } else {
+        Task::none()
+    }
+}
+
+/// Handle text received via the /print/text endpoint.
+/// Wraps it in a header showing the source + divider and queues for printing.
+fn handle_text_print(app: &mut App, text: String, source: &str) -> Task<Message> {
+    use crate::receipt_markdown::ReceiptSpan;
+
+    let header = source.to_uppercase();
+    let mut blocks = vec![
+        ReceiptBlock::Divider,
+        ReceiptBlock::Heading {
+            spans: vec![ReceiptSpan::heading(header)],
+        },
+        ReceiptBlock::Divider,
+        ReceiptBlock::BlankLine,
+    ];
+
+    // Parse the text as receipt markdown so formatting works
+    let content_blocks = crate::receipt_markdown::parse_receipt_markdown(&text);
+    blocks.extend(content_blocks);
+
+    blocks.push(ReceiptBlock::BlankLine);
+    blocks.push(ReceiptBlock::Divider);
+    blocks.push(ReceiptBlock::BlankLine);
+
+    let message_id = -(app.upload_photo_count as i64 + 10000);
+
+    app.print_queue.push(QueuedPrint {
+        message_id,
+        blocks,
+        image_bytes: None,
     });
 
     if !app.printing {

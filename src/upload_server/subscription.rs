@@ -1,9 +1,10 @@
-use super::handler;
+use super::handler::{self, PrintPayload};
 
 #[derive(Debug, Clone)]
 pub enum UploadEvent {
     Started(String),
     PhotoReceived(Vec<u8>),
+    TextReceived { text: String, source: String },
     Error(String),
 }
 
@@ -11,7 +12,7 @@ pub fn upload_server(bind_addr: String) -> impl futures::Stream<Item = UploadEve
     iced::stream::channel(10, |mut output| async move {
         use futures::SinkExt;
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<PrintPayload>(16);
         let router = handler::build_router(tx);
 
         let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
@@ -33,8 +34,14 @@ pub fn upload_server(bind_addr: String) -> impl futures::Stream<Item = UploadEve
             }
         });
 
-        while let Some(image_bytes) = rx.recv().await {
-            if output.send(UploadEvent::PhotoReceived(image_bytes)).await.is_err() {
+        while let Some(payload) = rx.recv().await {
+            let event = match payload {
+                PrintPayload::Image(bytes) => UploadEvent::PhotoReceived(bytes),
+                PrintPayload::Text { text, source } => {
+                    UploadEvent::TextReceived { text, source }
+                }
+            };
+            if output.send(event).await.is_err() {
                 break;
             }
         }
