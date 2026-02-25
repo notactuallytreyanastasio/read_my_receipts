@@ -112,21 +112,25 @@ fn filter_by_source(text: &str, source: &str) -> String {
     }
 }
 
-/// Keep only [error] log blocks from Elixir/Phoenix output.
-/// An error block starts with a line containing [error] and continues
-/// until the next log level marker.
+/// Keep only error blocks from Elixir/Phoenix output.
+/// Matches both bracketed `[error]` and bare `error:` prefixes.
+/// An error block continues until the next log level marker.
 fn filter_elixir_errors(text: &str) -> String {
     let mut result = Vec::new();
     let mut in_error_block = false;
 
     for line in text.lines() {
-        if line.contains("[error]") {
+        if line.contains("[error]") || line.contains("error:") {
             in_error_block = true;
             result.push(line);
         } else if line.contains("[info]")
             || line.contains("[debug]")
             || line.contains("[warning]")
             || line.contains("[notice]")
+            || line.contains("info:")
+            || line.contains("debug:")
+            || line.contains("warning:")
+            || line.contains("notice:")
         {
             in_error_block = false;
         } else if in_error_block {
