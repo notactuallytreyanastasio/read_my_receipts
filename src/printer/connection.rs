@@ -64,6 +64,24 @@ impl PrinterConnection {
         Ok(())
     }
 
+    /// Print text without cutting — for continuous log-style output.
+    pub fn print_no_cut(
+        &mut self,
+        blocks: &[crate::receipt_markdown::ReceiptBlock],
+        max_chars: u8,
+    ) -> Result<(), String> {
+        self.printer.init().map_err(|e| e.to_string())?;
+
+        let commands = crate::printer::rich_print::generate_commands(blocks, max_chars);
+        crate::printer::rich_print::execute_commands(&mut self.printer, &commands)?;
+
+        self.printer
+            .feeds(3)
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
     /// Print a website message: text content + optional image, then cut.
     ///
     /// Text and image are printed as separate init cycles to avoid

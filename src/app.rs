@@ -61,6 +61,7 @@ struct QueuedPrint {
     message_id: i64,
     blocks: Vec<ReceiptBlock>,
     image_bytes: Option<Vec<u8>>,
+    no_cut: bool,
 }
 
 pub struct App {
@@ -573,6 +574,7 @@ fn handle_received_messages(app: &mut App, messages: Vec<ReceiptMessage>) -> Tas
             message_id: msg.id,
             blocks,
             image_bytes: None,
+            no_cut: false,
         });
 
         // Start image download if URL present
@@ -619,6 +621,7 @@ fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
         message_id,
         blocks,
         image_bytes: Some(raw_bytes),
+        no_cut: false,
     });
 
     if !app.printing {
@@ -629,26 +632,11 @@ fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
 }
 
 /// Handle text received via the /print/text endpoint.
-/// Wraps it in a header showing the source + divider and queues for printing.
-fn handle_text_print(app: &mut App, text: String, source: &str) -> Task<Message> {
-    use crate::receipt_markdown::ReceiptSpan;
-
-    let header = source.to_uppercase();
-    let mut blocks = vec![
-        ReceiptBlock::Divider,
-        ReceiptBlock::Heading {
-            spans: vec![ReceiptSpan::heading(header)],
-        },
-        ReceiptBlock::Divider,
-        ReceiptBlock::BlankLine,
-    ];
-
-    // Parse the text as receipt markdown so formatting works
-    let content_blocks = crate::receipt_markdown::parse_receipt_markdown(&text);
-    blocks.extend(content_blocks);
-
+/// Prints as a continuous log — no header, no paper cut, just content + spacing.
+fn handle_text_print(app: &mut App, text: String, _source: &str) -> Task<Message> {
+    let mut blocks = crate::receipt_markdown::parse_receipt_markdown(&text);
     blocks.push(ReceiptBlock::BlankLine);
-    blocks.push(ReceiptBlock::Divider);
+    blocks.push(ReceiptBlock::BlankLine);
     blocks.push(ReceiptBlock::BlankLine);
 
     let message_id = -(app.upload_photo_count as i64 + 10000);
@@ -657,6 +645,7 @@ fn handle_text_print(app: &mut App, text: String, source: &str) -> Task<Message>
         message_id,
         blocks,
         image_bytes: None,
+        no_cut: true,
     });
 
     if !app.printing {
@@ -697,6 +686,7 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
     let message_id = job.message_id;
     let blocks = job.blocks;
     let image_bytes = job.image_bytes;
+    let no_cut = job.no_cut;
     let shared = app.shared_conn.clone();
 
     Task::perform(
@@ -705,7 +695,13 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
                 &shared,
                 printer_info.product_id,
                 printer_info.model_name.clone(),
-                |conn| conn.print_website_message(&blocks, max_chars, image_bytes.as_deref()),
+                |conn| {
+                    if no_cut {
+                        conn.print_no_cut(&blocks, max_chars)
+                    } else {
+                        conn.print_website_message(&blocks, max_chars, image_bytes.as_deref())
+                    }
+                },
             )
         },
         move |result| Message::PrintMessageResult { message_id, result },
