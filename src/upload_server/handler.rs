@@ -203,14 +203,14 @@ h1{font-size:28px;text-align:center;margin-bottom:6px}
 <p class="sub">Take a photo or pick one to print</p>
 
 <label class="pick" id="pick">
-<input type="file" id="file" accept="image/*" capture="environment">
-<span class="pick-text" id="pick-text">Tap to open camera</span>
+<input type="file" id="file" accept="image/*" multiple>
+<span class="pick-text" id="pick-text">Tap to select photos</span>
 </label>
 
 <div class="preview" id="preview"></div>
 <button class="btn" id="btn" disabled>Print</button>
 <div id="status" class="status"></div>
-<div class="again" id="again"><a href="/">Print another</a></div>
+<div class="again" id="again"><a href="/">Print more</a></div>
 </div>
 
 <script>
@@ -221,44 +221,55 @@ const file=document.getElementById('file'),
   status=document.getElementById('status'),
   again=document.getElementById('again');
 
-let selected=null;
+let files=[];
 
 file.addEventListener('change',function(){
-  selected=this.files[0];
-  if(!selected)return;
-  document.getElementById('pick-text').textContent=selected.name;
+  files=Array.from(this.files);
+  if(!files.length)return;
+  const n=files.length;
+  document.getElementById('pick-text').textContent=n+' photo'+(n>1?'s':'')+' selected';
   pick.classList.add('has');
   btn.disabled=false;
-  const r=new FileReader();
-  r.onload=e=>{preview.innerHTML='<img src="'+e.target.result+'">'};
-  r.readAsDataURL(selected);
+  preview.innerHTML=files.map((_,i)=>{
+    const r=new FileReader();
+    r.onload=e=>{
+      const el=document.getElementById('thumb'+i);
+      if(el)el.src=e.target.result;
+    };
+    r.readAsDataURL(files[i]);
+    return '<img id="thumb'+i+'" style="max-width:80px;max-height:80px;border-radius:6px;margin:4px">';
+  }).join('');
   status.className='status';
   again.style.display='none';
 });
 
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
 btn.addEventListener('click',async()=>{
-  if(!selected)return;
+  if(!files.length)return;
   btn.disabled=true;
-  btn.textContent='Sending...';
-  status.className='status wait';
-  status.textContent='Uploading photo...';
-  const fd=new FormData();
-  fd.append('image',selected);
-  try{
-    const resp=await fetch('/print/upload',{method:'POST',body:fd});
-    if(resp.ok){
-      status.className='status ok';
-      status.textContent='Sent to printer!';
-      again.style.display='block';
-    }else{
-      const t=await resp.text();
-      status.className='status err';
-      status.textContent='Error: '+t;
-    }
-  }catch(e){
-    status.className='status err';
-    status.textContent='Connection failed';
+  const total=files.length;
+  let ok=0,fail=0;
+  for(let i=0;i<total;i++){
+    btn.textContent='Sending '+(i+1)+'/'+total+'...';
+    status.className='status wait';
+    status.textContent='Uploading photo '+(i+1)+' of '+total+'...';
+    if(i>0)await sleep(2000);
+    const fd=new FormData();
+    fd.append('image',files[i]);
+    try{
+      const resp=await fetch('/print/upload',{method:'POST',body:fd});
+      if(resp.ok){ok++}else{fail++}
+    }catch(e){fail++}
   }
+  if(fail===0){
+    status.className='status ok';
+    status.textContent='All '+ok+' photo'+(ok>1?'s':'')+' sent to printer!';
+  }else{
+    status.className='status err';
+    status.textContent=ok+' sent, '+fail+' failed';
+  }
+  again.style.display='block';
   btn.disabled=false;
   btn.textContent='Print';
 });

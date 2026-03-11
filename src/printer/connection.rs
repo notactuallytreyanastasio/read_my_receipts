@@ -217,10 +217,27 @@ pub fn print_with_shared(
         *guard = Some(conn);
     }
 
+    // Liveness check: send an init command to verify the USB pipe is functional.
+    // If it fails, the connection is stale — close and reopen before printing.
+    {
+        let conn = guard.as_mut().unwrap();
+        if let Err(e) = conn.printer.init() {
+            tracing::warn!(
+                "USB liveness check failed, reconnecting: {e}"
+            );
+            *guard = None;
+            let conn = PrinterConnection::open(product_id, model_name.clone())?;
+            *guard = Some(conn);
+        }
+    }
+
     let conn = guard.as_mut().unwrap();
 
     match f(conn) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            tracing::info!("Print job completed successfully");
+            Ok(())
+        }
         Err(e) => {
             // USB error — connection is likely broken. Close it so next
             // print attempt will reopen fresh.

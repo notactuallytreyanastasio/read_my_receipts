@@ -383,6 +383,11 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::PrintMessageResult { message_id, result } => {
             app.printing = false;
 
+            match &result {
+                Ok(()) => tracing::info!("Print completed for message_id={message_id}"),
+                Err(e) => tracing::error!("Print failed for message_id={message_id}: {e}"),
+            }
+
             // Update received message status
             if let Some(rm) = app
                 .received_messages
@@ -602,18 +607,8 @@ fn handle_received_messages(app: &mut App, messages: Vec<ReceiptMessage>) -> Tas
 }
 
 /// Handle a photo received via the upload server.
-/// Queues it for printing with a minimal header.
 fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
-    use crate::receipt_markdown::ReceiptSpan;
-
-    let blocks = vec![
-        ReceiptBlock::Divider,
-        ReceiptBlock::Heading {
-            spans: vec![ReceiptSpan::heading("PHOTO")],
-        },
-        ReceiptBlock::Divider,
-        ReceiptBlock::BlankLine,
-    ];
+    let blocks = vec![];
 
     let message_id = -(app.upload_photo_count as i64);
 
