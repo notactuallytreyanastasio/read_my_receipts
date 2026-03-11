@@ -511,6 +511,15 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                     );
                     handle_photo_upload(app, image_bytes)
                 }
+                UploadEvent::StripPhotoReceived(image_bytes) => {
+                    app.upload_photo_count += 1;
+                    tracing::info!(
+                        "Strip photo #{}: {} bytes (no cut)",
+                        app.upload_photo_count,
+                        image_bytes.len()
+                    );
+                    handle_strip_photo(app, image_bytes)
+                }
                 UploadEvent::TextReceived { text, source } => {
                     tracing::info!("Text print received: {} bytes (source={})", text.len(), source);
                     handle_text_print(app, text, &source)
@@ -626,6 +635,24 @@ fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
     }
 }
 
+/// Handle a strip photo (no cut) — for photo booth sequences.
+fn handle_strip_photo(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
+    let message_id = -(app.upload_photo_count as i64);
+
+    app.print_queue.push(QueuedPrint {
+        message_id,
+        blocks: vec![],
+        image_bytes: Some(raw_bytes),
+        no_cut: true,
+    });
+
+    if !app.printing {
+        try_print_next_queued(app)
+    } else {
+        Task::none()
+    }
+}
+
 /// Handle text received via the /print/text endpoint.
 /// Prints as a continuous log — no header, no paper cut, just content + spacing.
 fn handle_text_print(app: &mut App, text: String, _source: &str) -> Task<Message> {
@@ -692,7 +719,11 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
                 printer_info.model_name.clone(),
                 |conn| {
                     if no_cut {
-                        conn.print_no_cut(&blocks, max_chars)
+                        if image_bytes.is_some() {
+                            conn.print_image_no_cut(image_bytes.as_deref().unwrap())
+                        } else {
+                            conn.print_no_cut(&blocks, max_chars)
+                        }
                     } else {
                         conn.print_website_message(&blocks, max_chars, image_bytes.as_deref())
                     }

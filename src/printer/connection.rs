@@ -118,6 +118,15 @@ impl PrinterConnection {
         Ok(())
     }
 
+    /// Print an image without cutting — for photo strip sequences.
+    /// Sends the image + a small feed, but no cut command.
+    pub fn print_image_no_cut(&mut self, image_bytes: &[u8]) -> Result<(), String> {
+        self.printer.init().map_err(|e| e.to_string())?;
+        self.print_image(image_bytes)?;
+        self.printer.feeds(2).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Print an image using ESC/POS bit image commands.
     /// Resizes, applies gamma + Floyd-Steinberg dithering, then sends to printer.
     fn print_image(&mut self, image_bytes: &[u8]) -> Result<(), String> {

@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub enum PrintPayload {
     Image(Vec<u8>),
+    /// Image printed without cutting — for photo strip sequences.
+    ImageNoCut(Vec<u8>),
     Text { text: String, source: String },
 }
 
@@ -142,6 +144,103 @@ fn filter_elixir_errors(text: &str) -> String {
     result.join("\n")
 }
 
+/// POST /print/strip — accept multipart image and print WITHOUT cutting.
+/// Used by the photo booth to print a strip of photos.
+async fn upload_strip(
+    State(state): State<UploadState>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "image" {
+            let bytes = match field.bytes().await {
+                Ok(b) => b.to_vec(),
+                Err(e) => {
+                    return (StatusCode::BAD_REQUEST, format!("Read error: {e}"));
+                }
+            };
+            if bytes.is_empty() {
+                return (StatusCode::BAD_REQUEST, "Empty file".to_string());
+            }
+            tracing::info!("Strip photo received: {} bytes", bytes.len());
+            if state
+                .tx
+                .send(PrintPayload::ImageNoCut(bytes))
+                .await
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Print queue closed".to_string(),
+                );
+            }
+            return (StatusCode::OK, "Queued (no cut)".to_string());
+        }
+    }
+    (StatusCode::BAD_REQUEST, "No 'image' field found".to_string())
+}
+
+/// POST /booth/preview — start camera preview on the display.
+async fn booth_preview() -> impl IntoResponse {
+    // Kill existing preview, wait, start new one, raise window — all in a background thread.
+    std::thread::spawn(|| {
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "rpicam-hello"])
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = std::process::Command::new("rpicam-hello")
+            .args([
+                "-t", "0",
+                "--viewfinder-mode", "1332:990:10:P",
+            ])
+            .env("DISPLAY", ":0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    });
+
+    (StatusCode::OK, "Preview starting".to_string())
+}
+
+/// POST /booth/shoot — run the full photo booth sequence (countdown → 3 photos → print strip).
+/// Spawns the booth binary as a detached process and returns immediately.
+async fn booth_shoot() -> impl IntoResponse {
+    // Find the booth binary next to this binary
+    let booth_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("booth")))
+        .unwrap_or_else(|| std::path::PathBuf::from("booth"));
+
+    if !booth_path.exists() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "booth binary not found".to_string(),
+        );
+    }
+
+    let result = std::process::Command::new("setsid")
+        .args([booth_path.to_str().unwrap()])
+        .env("DISPLAY", ":0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    match result {
+        Ok(_) => (StatusCode::OK, "Booth sequence started".to_string()),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to start booth: {e}"),
+        ),
+    }
+}
+
+/// GET /booth — photo booth control page
+async fn booth_page() -> Html<&'static str> {
+    Html(BOOTH_PAGE)
+}
+
 /// iOS captive portal check: return "Success" so iOS thinks the network
 /// has internet and dismisses the captive portal mini-browser.
 /// The user then opens Safari to http://192.168.4.1 for the real page.
@@ -159,7 +258,11 @@ pub fn build_router(tx: mpsc::Sender<PrintPayload>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/print/upload", post(upload))
+        .route("/print/strip", post(upload_strip))
         .route("/print/text", post(print_text))
+        .route("/booth/preview", post(booth_preview))
+        .route("/booth/shoot", post(booth_shoot))
+        .route("/booth", get(booth_page))
         .route("/hotspot-detect.html", get(captive_success))
         .route("/library/test/success.html", get(captive_success))
         .route("/generate_204", get(generate_204))
@@ -211,6 +314,7 @@ h1{font-size:28px;text-align:center;margin-bottom:6px}
 <button class="btn" id="btn" disabled>Print</button>
 <div id="status" class="status"></div>
 <div class="again" id="again"><a href="/">Print more</a></div>
+<div style="margin-top:32px;text-align:center"><a href="/booth" style="color:#5ae;font-size:15px;text-decoration:none">Photo Booth Mode</a></div>
 </div>
 
 <script>
@@ -272,6 +376,113 @@ btn.addEventListener('click',async()=>{
   again.style.display='block';
   btn.disabled=false;
   btn.textContent='Print';
+});
+</script>
+</body>
+</html>"#;
+
+const BOOTH_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Photo Booth</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#111;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.wrap{width:100%;max-width:400px;padding:20px;text-align:center}
+h1{font-size:28px;margin-bottom:6px}
+.sub{color:#888;font-size:13px;margin-bottom:32px}
+.btn{display:block;width:100%;padding:16px;border:none;border-radius:10px;font-size:17px;font-weight:600;cursor:pointer;margin-bottom:12px}
+.btn:disabled{opacity:.3;cursor:not-allowed}
+.btn-preview{background:#333;color:#fff}
+.btn-shoot{background:#fff;color:#000}
+.status{margin-top:16px;padding:12px;border-radius:8px;font-size:14px;text-align:center;display:none}
+.status.ok{background:#1a3a2a;color:#4a9;display:block}
+.status.err{background:#3a1a1a;color:#e55;display:block}
+.status.wait{background:#1a2a3a;color:#5ae;display:block}
+.again{display:none;margin-top:12px}
+.again a{color:#5ae;font-size:14px;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Photo Booth</h1>
+<p class="sub">3 photos, printed as a strip</p>
+
+<button class="btn btn-preview" id="preview-btn">Start Preview</button>
+<button class="btn btn-shoot" id="shoot-btn" disabled>Take Photos</button>
+<div id="status" class="status"></div>
+<div class="again" id="again"><a href="/booth">Go again</a></div>
+</div>
+
+<script>
+const previewBtn=document.getElementById('preview-btn'),
+  shootBtn=document.getElementById('shoot-btn'),
+  status=document.getElementById('status'),
+  again=document.getElementById('again');
+
+previewBtn.addEventListener('click',async()=>{
+  previewBtn.disabled=true;
+  previewBtn.textContent='Starting...';
+  status.className='status wait';
+  status.textContent='Starting camera preview on screen...';
+  try{
+    const r=await fetch('/booth/preview',{method:'POST'});
+    if(r.ok){
+      previewBtn.textContent='Preview Running';
+      shootBtn.disabled=false;
+      status.className='status ok';
+      status.textContent='Camera preview is live. Position yourself and hit Take Photos!';
+    }else{
+      const t=await r.text();
+      status.className='status err';
+      status.textContent='Error: '+t;
+      previewBtn.disabled=false;
+      previewBtn.textContent='Start Preview';
+    }
+  }catch(e){
+    status.className='status err';
+    status.textContent='Connection failed';
+    previewBtn.disabled=false;
+    previewBtn.textContent='Start Preview';
+  }
+});
+
+shootBtn.addEventListener('click',async()=>{
+  shootBtn.disabled=true;
+  previewBtn.disabled=true;
+  shootBtn.textContent='Shooting...';
+  status.className='status wait';
+  status.textContent='Get ready! Countdown starting on screen...';
+  try{
+    const r=await fetch('/booth/shoot',{method:'POST'});
+    if(r.ok){
+      status.className='status wait';
+      status.textContent='Photos being taken and printed... hold tight!';
+      // The booth sequence takes ~30s. Poll or just wait.
+      setTimeout(()=>{
+        status.className='status ok';
+        status.textContent='Strip printed! Check the printer.';
+        again.style.display='block';
+        shootBtn.textContent='Take Photos';
+        shootBtn.disabled=false;
+        previewBtn.disabled=false;
+        previewBtn.textContent='Start Preview';
+      },35000);
+    }else{
+      const t=await r.text();
+      status.className='status err';
+      status.textContent='Error: '+t;
+      shootBtn.disabled=false;
+      shootBtn.textContent='Take Photos';
+    }
+  }catch(e){
+    status.className='status err';
+    status.textContent='Connection failed';
+    shootBtn.disabled=false;
+    shootBtn.textContent='Take Photos';
+  }
 });
 </script>
 </body>

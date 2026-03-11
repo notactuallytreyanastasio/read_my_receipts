@@ -4,6 +4,8 @@ use super::handler::{self, PrintPayload};
 pub enum UploadEvent {
     Started(String),
     PhotoReceived(Vec<u8>),
+    /// Photo that should print without cutting (for photo strip sequences).
+    StripPhotoReceived(Vec<u8>),
     TextReceived { text: String, source: String },
     Error(String),
 }
@@ -37,6 +39,7 @@ pub fn upload_server(bind_addr: String) -> impl futures::Stream<Item = UploadEve
         while let Some(payload) = rx.recv().await {
             let event = match payload {
                 PrintPayload::Image(bytes) => UploadEvent::PhotoReceived(bytes),
+                PrintPayload::ImageNoCut(bytes) => UploadEvent::StripPhotoReceived(bytes),
                 PrintPayload::Text { text, source } => {
                     UploadEvent::TextReceived { text, source }
                 }

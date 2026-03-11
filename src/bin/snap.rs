@@ -32,6 +32,7 @@ fn main() {
 
     eprintln!("Capturing {width}x{height} → {}", output_path.display());
 
+    let ev = env_or("SNAP_EV", "0.5"); // exposure compensation: brighten by default
     let status = Command::new("rpicam-still")
         .args([
             "-o", output_path.to_str().unwrap(),
@@ -39,6 +40,7 @@ fn main() {
             "--height", &height,
             "-t", &timeout,
             "--nopreview",
+            "--ev", &ev,
         ])
         .status();
 

@@ -1,13 +1,4 @@
-mod app;
-mod error;
-mod platform;
-mod poller;
-mod printer;
-mod receipt_markdown;
-mod upload_server;
-mod word_wrap;
-
-use app::{App, DisplayMode};
+use receipts::app::{self, App, DisplayMode};
 
 fn main() -> iced::Result {
     tracing_subscriber::fmt()
@@ -32,7 +23,7 @@ fn main() -> iced::Result {
     builder.run_with(move || {
         let app = App::new(mode);
         let scan = iced::Task::perform(
-            async { crate::printer::discovery::scan_for_printers() },
+            async { receipts::printer::discovery::scan_for_printers() },
             app::Message::PrintersFound,
         );
         (app, scan)
