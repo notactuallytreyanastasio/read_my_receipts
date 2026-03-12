@@ -13,7 +13,8 @@ use tokio::sync::mpsc;
 pub enum PrintPayload {
     Image(Vec<u8>),
     /// Image printed without cutting — for photo strip sequences.
-    ImageNoCut(Vec<u8>),
+    /// Second field is feed lines after the image.
+    ImageNoCut(Vec<u8>, u8),
     Text { text: String, source: String },
 }
 
@@ -57,6 +58,11 @@ async fn upload(State(state): State<UploadState>, mut multipart: Multipart) -> i
 #[derive(Deserialize)]
 struct TextParams {
     source: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StripParams {
+    feed: Option<u8>,
 }
 
 /// POST /print/text?source=phx.server — accept plain text body and queue for printing.
@@ -146,10 +152,13 @@ fn filter_elixir_errors(text: &str) -> String {
 
 /// POST /print/strip — accept multipart image and print WITHOUT cutting.
 /// Used by the photo booth to print a strip of photos.
+/// Optional query param: ?feed=N (default 3, lines of feed after image)
 async fn upload_strip(
     State(state): State<UploadState>,
+    Query(params): Query<StripParams>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
+    let feed = params.feed.unwrap_or(3);
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         if name == "image" {
@@ -165,7 +174,7 @@ async fn upload_strip(
             tracing::info!("Strip photo received: {} bytes", bytes.len());
             if state
                 .tx
-                .send(PrintPayload::ImageNoCut(bytes))
+                .send(PrintPayload::ImageNoCut(bytes, feed))
                 .await
                 .is_err()
             {

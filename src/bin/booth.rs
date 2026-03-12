@@ -82,7 +82,9 @@ fn main() {
             }
         };
 
-        let url = format!("http://localhost:{port}/print/strip");
+        // Extra feed after last photo so the tear doesn't cut into the image
+        let feed = if i == photos.len() - 1 { 10 } else { 3 };
+        let url = format!("http://localhost:{port}/print/strip?feed={feed}");
         let boundary = "----boothboundary";
         let mut body = Vec::new();
         body.extend_from_slice(

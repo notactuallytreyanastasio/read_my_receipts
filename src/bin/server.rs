@@ -135,10 +135,10 @@ fn print_worker(
                     conn.print_website_message(&[], max_chars, Some(&bytes))
                 })
             }
-            PrintPayload::ImageNoCut(bytes) => {
-                tracing::info!("Printing strip image (no cut): {} bytes", bytes.len());
+            PrintPayload::ImageNoCut(bytes, feed) => {
+                tracing::info!("Printing strip image (no cut, feed={}): {} bytes", feed, bytes.len());
                 connection::print_with_shared(&shared, product_id, model_name, |conn| {
-                    conn.print_image_no_cut(&bytes)
+                    conn.print_image_no_cut(&bytes, feed)
                 })
             }
             PrintPayload::Text { text, source } => {

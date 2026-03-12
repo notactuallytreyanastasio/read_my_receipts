@@ -62,6 +62,8 @@ struct QueuedPrint {
     blocks: Vec<ReceiptBlock>,
     image_bytes: Option<Vec<u8>>,
     no_cut: bool,
+    /// Feed lines after printing (only used for no-cut prints).
+    feed_lines: u8,
 }
 
 pub struct App {
@@ -511,14 +513,15 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                     );
                     handle_photo_upload(app, image_bytes)
                 }
-                UploadEvent::StripPhotoReceived(image_bytes) => {
+                UploadEvent::StripPhotoReceived(image_bytes, feed_lines) => {
                     app.upload_photo_count += 1;
                     tracing::info!(
-                        "Strip photo #{}: {} bytes (no cut)",
+                        "Strip photo #{}: {} bytes (no cut, feed={})",
                         app.upload_photo_count,
-                        image_bytes.len()
+                        image_bytes.len(),
+                        feed_lines,
                     );
-                    handle_strip_photo(app, image_bytes)
+                    handle_strip_photo(app, image_bytes, feed_lines)
                 }
                 UploadEvent::TextReceived { text, source } => {
                     tracing::info!("Text print received: {} bytes (source={})", text.len(), source);
@@ -589,6 +592,7 @@ fn handle_received_messages(app: &mut App, messages: Vec<ReceiptMessage>) -> Tas
             blocks,
             image_bytes: None,
             no_cut: false,
+            feed_lines: 3,
         });
 
         // Start image download if URL present
@@ -626,6 +630,7 @@ fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
         blocks,
         image_bytes: Some(raw_bytes),
         no_cut: false,
+        feed_lines: 3,
     });
 
     if !app.printing {
@@ -636,7 +641,7 @@ fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
 }
 
 /// Handle a strip photo (no cut) — for photo booth sequences.
-fn handle_strip_photo(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
+fn handle_strip_photo(app: &mut App, raw_bytes: Vec<u8>, feed_lines: u8) -> Task<Message> {
     let message_id = -(app.upload_photo_count as i64);
 
     app.print_queue.push(QueuedPrint {
@@ -644,6 +649,7 @@ fn handle_strip_photo(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
         blocks: vec![],
         image_bytes: Some(raw_bytes),
         no_cut: true,
+        feed_lines,
     });
 
     if !app.printing {
@@ -668,6 +674,7 @@ fn handle_text_print(app: &mut App, text: String, _source: &str) -> Task<Message
         blocks,
         image_bytes: None,
         no_cut: true,
+        feed_lines: 3,
     });
 
     if !app.printing {
@@ -709,6 +716,7 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
     let blocks = job.blocks;
     let image_bytes = job.image_bytes;
     let no_cut = job.no_cut;
+    let feed_lines = job.feed_lines;
     let shared = app.shared_conn.clone();
 
     Task::perform(
@@ -720,7 +728,7 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
                 |conn| {
                     if no_cut {
                         if image_bytes.is_some() {
-                            conn.print_image_no_cut(image_bytes.as_deref().unwrap())
+                            conn.print_image_no_cut(image_bytes.as_deref().unwrap(), feed_lines)
                         } else {
                             conn.print_no_cut(&blocks, max_chars)
                         }
