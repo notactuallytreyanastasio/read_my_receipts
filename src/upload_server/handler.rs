@@ -203,7 +203,7 @@ async fn booth_preview() -> impl IntoResponse {
     (StatusCode::OK, "Preview starting".to_string())
 }
 
-/// POST /booth/shoot — run the full photo booth sequence (countdown → 3 photos → print strip).
+/// POST /booth/shoot — run the photo booth sequence (countdown → 1 photo → print).
 /// Spawns the booth binary as a detached process and returns immediately.
 async fn booth_shoot() -> impl IntoResponse {
     // Find the booth binary next to this binary
@@ -401,8 +401,6 @@ h1{font-size:28px;margin-bottom:6px}
 .status.ok{background:#1a3a2a;color:#4a9;display:block}
 .status.err{background:#3a1a1a;color:#e55;display:block}
 .status.wait{background:#1a2a3a;color:#5ae;display:block}
-.again{display:none;margin-top:12px}
-.again a{color:#5ae;font-size:14px;text-decoration:none}
 </style>
 </head>
 <body>
@@ -413,14 +411,14 @@ h1{font-size:28px;margin-bottom:6px}
 <button class="btn btn-preview" id="preview-btn">Start Preview</button>
 <button class="btn btn-shoot" id="shoot-btn" disabled>Take Photos</button>
 <div id="status" class="status"></div>
-<div class="again" id="again"><a href="/booth">Go again</a></div>
 </div>
 
 <script>
 const previewBtn=document.getElementById('preview-btn'),
   shootBtn=document.getElementById('shoot-btn'),
-  status=document.getElementById('status'),
-  again=document.getElementById('again');
+  status=document.getElementById('status');
+
+let shooting=false;
 
 previewBtn.addEventListener('click',async()=>{
   previewBtn.disabled=true;
@@ -433,7 +431,7 @@ previewBtn.addEventListener('click',async()=>{
       previewBtn.textContent='Preview Running';
       shootBtn.disabled=false;
       status.className='status ok';
-      status.textContent='Camera preview is live. Position yourself and hit Take Photos!';
+      status.textContent='Position yourself and hit Take Photos!';
     }else{
       const t=await r.text();
       status.className='status err';
@@ -450,8 +448,9 @@ previewBtn.addEventListener('click',async()=>{
 });
 
 shootBtn.addEventListener('click',async()=>{
+  if(shooting)return;
+  shooting=true;
   shootBtn.disabled=true;
-  previewBtn.disabled=true;
   shootBtn.textContent='Shooting...';
   status.className='status wait';
   status.textContent='Get ready! Countdown starting on screen...';
@@ -460,28 +459,29 @@ shootBtn.addEventListener('click',async()=>{
     if(r.ok){
       status.className='status wait';
       status.textContent='Photos being taken and printed... hold tight!';
-      // The booth sequence takes ~30s. Poll or just wait.
       setTimeout(()=>{
         status.className='status ok';
         status.textContent='Strip printed! Check the printer.';
-        again.style.display='block';
         shootBtn.textContent='Take Photos';
         shootBtn.disabled=false;
         previewBtn.disabled=false;
         previewBtn.textContent='Start Preview';
-      },35000);
+        shooting=false;
+      },45000);
     }else{
       const t=await r.text();
       status.className='status err';
       status.textContent='Error: '+t;
       shootBtn.disabled=false;
       shootBtn.textContent='Take Photos';
+      shooting=false;
     }
   }catch(e){
     status.className='status err';
     status.textContent='Connection failed';
     shootBtn.disabled=false;
     shootBtn.textContent='Take Photos';
+    shooting=false;
   }
 });
 </script>

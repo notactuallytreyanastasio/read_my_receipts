@@ -1,4 +1,4 @@
-//! Photo booth sequence: countdown → 3 photos → print as strip.
+//! Photo booth: countdown → 3 photos → print strip (no cuts).
 //!
 //! Designed to be spawned by the web server. Manages the display,
 //! camera, and print pipeline as a standalone process.
@@ -21,12 +21,11 @@ fn main() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Step 2: Countdown + 3 photos
-    let prompts = ["3", "2", "1", "Cheese!"];
     let mut photos: Vec<PathBuf> = Vec::new();
 
-    for (i, round) in ["first", "again", "last"].iter().enumerate() {
+    for i in 0..3 {
         // Countdown
-        for text in &prompts {
+        for text in ["3", "2", "1", "Cheese!"] {
             show_text(text, 900);
         }
 
@@ -63,17 +62,17 @@ fn main() {
             }
         }
 
-        // Show prompt for next round (or done)
-        match *round {
-            "first" => show_text("Again!", 800),
-            "again" => show_text("Last one!", 800),
-            "last" => show_text("Done!", 1500),
+        // Prompt between rounds
+        match i {
+            0 => show_text("Again!", 800),
+            1 => show_text("Last one!", 800),
+            2 => show_text("Printing!", 1500),
             _ => {}
         }
     }
 
-    // Step 3: Print all 3 as a strip (no cut between)
-    eprintln!("[booth] Printing {} photos as strip...", photos.len());
+    // Step 3: Print all 3 via /print/strip (no cuts)
+    eprintln!("[booth] Printing {} photos as strip (no cuts)...", photos.len());
     for (i, photo) in photos.iter().enumerate() {
         let bytes = match std::fs::read(photo) {
             Ok(b) => b,
@@ -83,14 +82,7 @@ fn main() {
             }
         };
 
-        let url = if i < photos.len() - 1 {
-            // No cut for intermediate photos
-            format!("http://localhost:{port}/print/strip")
-        } else {
-            // Final photo gets the cut
-            format!("http://localhost:{port}/print/upload")
-        };
-
+        let url = format!("http://localhost:{port}/print/strip");
         let boundary = "----boothboundary";
         let mut body = Vec::new();
         body.extend_from_slice(
@@ -127,7 +119,7 @@ fn main() {
             Err(e) => eprintln!("[booth] Upload failed: {e}"),
         }
 
-        // Small delay between prints
+        // Wait between prints so they don't overlap
         if i < photos.len() - 1 {
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
@@ -155,8 +147,6 @@ fn show_text(text: &str, ms: u32) {
         "<span font=\"{}\" weight=\"bold\">{}</span>",
         font_size, text
     );
-    // Fire zenity in background, sleep for the duration, then kill it
-    // This gives us precise timing control
     let child = Command::new("zenity")
         .args([
             "--info",
@@ -170,7 +160,6 @@ fn show_text(text: &str, ms: u32) {
         .stderr(std::process::Stdio::null())
         .spawn();
 
-    // Maximize the zenity window after a brief delay
     if let Ok(mut child) = child {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let _ = Command::new("xdotool")

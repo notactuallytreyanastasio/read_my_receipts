@@ -77,6 +77,8 @@ impl PrinterConnection {
 
         self.printer
             .feeds(3)
+            .map_err(|e| e.to_string())?
+            .print()
             .map_err(|e| e.to_string())?;
 
         Ok(())
@@ -123,7 +125,11 @@ impl PrinterConnection {
     pub fn print_image_no_cut(&mut self, image_bytes: &[u8]) -> Result<(), String> {
         self.printer.init().map_err(|e| e.to_string())?;
         self.print_image(image_bytes)?;
-        self.printer.feeds(2).map_err(|e| e.to_string())?;
+        self.printer
+            .feeds(2)
+            .map_err(|e| e.to_string())?
+            .print()
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
