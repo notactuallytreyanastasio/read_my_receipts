@@ -241,6 +241,67 @@ async fn booth_page() -> Html<&'static str> {
     Html(BOOTH_PAGE)
 }
 
+/// GET /admin — ops dashboard
+async fn admin_page() -> Html<&'static str> {
+    Html(ADMIN_PAGE)
+}
+
+/// POST /admin/run — execute a predefined ops command and return output
+async fn admin_run(Query(params): Query<AdminParams>) -> impl IntoResponse {
+    let (cmd, args): (&str, Vec<&str>) = match params.cmd.as_str() {
+        "status" => ("make", vec!["-C", "/home/pi/read_my_receipts", "status"]),
+        "restart" => ("make", vec!["-C", "/home/pi/read_my_receipts", "restart"]),
+        "stop" => ("make", vec!["-C", "/home/pi/read_my_receipts", "stop"]),
+        "start" => ("make", vec!["-C", "/home/pi/read_my_receipts", "start"]),
+        "logs" => ("tail", vec!["-100", "/tmp/receipts.log"]),
+        "test-print" => ("make", vec!["-C", "/home/pi/read_my_receipts", "test-print"]),
+        "preview" => ("make", vec!["-C", "/home/pi/read_my_receipts", "preview"]),
+        "preview-stop" => ("make", vec!["-C", "/home/pi/read_my_receipts", "preview-stop"]),
+        "deploy" => ("make", vec!["-C", "/home/pi/read_my_receipts", "deploy"]),
+        "wake-display" => {
+            let _ = std::process::Command::new("xset")
+                .args(["dpms", "force", "on"])
+                .env("DISPLAY", ":0")
+                .status();
+            return (StatusCode::OK, "Display wake sent".to_string());
+        }
+        _ => return (StatusCode::BAD_REQUEST, format!("Unknown command: {}", params.cmd)),
+    };
+
+    let result = std::process::Command::new(cmd)
+        .args(&args)
+        .env("DISPLAY", ":0")
+        .output();
+
+    match result {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Strip ANSI escape codes
+            let clean = format!("{}{}", stdout, stderr)
+                .replace("\x1b[0m", "")
+                .replace("\x1b[2m", "")
+                .replace("\x1b[32m", "")
+                .replace("\x1b[33m", "")
+                .replace("\x1b[34m", "")
+                .replace("\x1b[31m", "")
+                .replace("\x1b[1;32m", "")
+                .replace("\x1b[1;37m", "")
+                .replace("\x1b[1;34m", "")
+                .replace("\x1b[1;31m", "")
+                .replace("\x1b[0;32m", "");
+            let status = if output.status.success() { "ok" } else { "error" };
+            (StatusCode::OK, format!("[{}]\n{}", status, clean))
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {e}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct AdminParams {
+    cmd: String,
+}
+
 /// iOS captive portal check: return "Success" so iOS thinks the network
 /// has internet and dismisses the captive portal mini-browser.
 /// The user then opens Safari to http://192.168.4.1 for the real page.
@@ -263,6 +324,8 @@ pub fn build_router(tx: mpsc::Sender<PrintPayload>) -> Router {
         .route("/booth/preview", post(booth_preview))
         .route("/booth/shoot", post(booth_shoot))
         .route("/booth", get(booth_page))
+        .route("/admin", get(admin_page))
+        .route("/admin/run", post(admin_run))
         .route("/hotspot-detect.html", get(captive_success))
         .route("/library/test/success.html", get(captive_success))
         .route("/generate_204", get(generate_204))
@@ -484,6 +547,95 @@ shootBtn.addEventListener('click',async()=>{
     shooting=false;
   }
 });
+</script>
+</body>
+</html>"#;
+
+const ADMIN_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,monospace;background:#0a0a0a;color:#ccc;padding:16px;max-width:600px;margin:0 auto}
+h1{font-size:20px;margin-bottom:4px;color:#fff}
+.sub{color:#666;font-size:12px;margin-bottom:20px}
+.section{margin-bottom:20px}
+.section h2{font-size:13px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;border-bottom:1px solid #222;padding-bottom:4px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.btn{padding:12px 8px;border:1px solid #333;border-radius:6px;background:#1a1a1a;color:#fff;font-size:14px;font-family:inherit;cursor:pointer;text-align:center;transition:all .15s}
+.btn:hover{background:#252525;border-color:#555}
+.btn:active{background:#333}
+.btn:disabled{opacity:.3;cursor:wait}
+.btn-danger{border-color:#522;color:#e55}
+.btn-danger:hover{background:#2a1515}
+.btn-success{border-color:#253;color:#4a9}
+.btn-success:hover{background:#152a1a}
+.btn-wide{grid-column:1/-1}
+#output{margin-top:16px;background:#111;border:1px solid #222;border-radius:6px;padding:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow-y:auto;display:none}
+.nav{margin-bottom:16px;font-size:13px}
+.nav a{color:#5ae;text-decoration:none;margin-right:12px}
+</style>
+</head>
+<body>
+<h1>Admin Panel</h1>
+<p class="sub">Ops commands for Read My Receipts</p>
+<div class="nav"><a href="/">Upload</a><a href="/booth">Booth</a><a href="/admin">Admin</a></div>
+
+<div class="section">
+<h2>Diagnostics</h2>
+<div class="grid">
+<button class="btn btn-wide" onclick="run('status')">Status</button>
+<button class="btn" onclick="run('logs')">Recent Logs</button>
+<button class="btn" onclick="run('test-print')">Test Print</button>
+</div>
+</div>
+
+<div class="section">
+<h2>Process</h2>
+<div class="grid">
+<button class="btn btn-success" onclick="run('restart')">Restart</button>
+<button class="btn btn-danger" onclick="run('stop')">Stop</button>
+<button class="btn btn-success" onclick="run('start')">Start</button>
+<button class="btn" onclick="run('deploy')">Build &amp; Deploy</button>
+</div>
+</div>
+
+<div class="section">
+<h2>Camera</h2>
+<div class="grid">
+<button class="btn" onclick="run('preview')">Start Preview</button>
+<button class="btn" onclick="run('preview-stop')">Stop Preview</button>
+</div>
+</div>
+
+<div class="section">
+<h2>Display</h2>
+<div class="grid">
+<button class="btn btn-wide" onclick="run('wake-display')">Wake Display</button>
+</div>
+</div>
+
+<pre id="output"></pre>
+
+<script>
+const out=document.getElementById('output');
+async function run(cmd){
+  out.style.display='block';
+  out.textContent='Running '+cmd+'...\n';
+  document.querySelectorAll('.btn').forEach(b=>b.disabled=true);
+  try{
+    const r=await fetch('/admin/run?cmd='+encodeURIComponent(cmd),{method:'POST'});
+    const t=await r.text();
+    out.textContent=t;
+    out.scrollTop=out.scrollHeight;
+  }catch(e){
+    out.textContent='Connection failed: '+e;
+  }
+  document.querySelectorAll('.btn').forEach(b=>b.disabled=false);
+}
 </script>
 </body>
 </html>"#;
