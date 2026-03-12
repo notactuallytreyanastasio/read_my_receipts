@@ -64,6 +64,8 @@ struct QueuedPrint {
     no_cut: bool,
     /// Feed lines after printing (only used for no-cut prints).
     feed_lines: u8,
+    /// Indoor brightness boost for thermal printing.
+    bright: bool,
 }
 
 pub struct App {
@@ -513,15 +515,16 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                     );
                     handle_photo_upload(app, image_bytes)
                 }
-                UploadEvent::StripPhotoReceived(image_bytes, feed_lines) => {
+                UploadEvent::StripPhotoReceived(image_bytes, feed_lines, bright) => {
                     app.upload_photo_count += 1;
                     tracing::info!(
-                        "Strip photo #{}: {} bytes (no cut, feed={})",
+                        "Strip photo #{}: {} bytes (no cut, feed={}, bright={})",
                         app.upload_photo_count,
                         image_bytes.len(),
                         feed_lines,
+                        bright,
                     );
-                    handle_strip_photo(app, image_bytes, feed_lines)
+                    handle_strip_photo(app, image_bytes, feed_lines, bright)
                 }
                 UploadEvent::TextReceived { text, source } => {
                     tracing::info!("Text print received: {} bytes (source={})", text.len(), source);
@@ -593,6 +596,7 @@ fn handle_received_messages(app: &mut App, messages: Vec<ReceiptMessage>) -> Tas
             image_bytes: None,
             no_cut: false,
             feed_lines: 3,
+            bright: false,
         });
 
         // Start image download if URL present
@@ -631,6 +635,7 @@ fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
         image_bytes: Some(raw_bytes),
         no_cut: false,
         feed_lines: 3,
+        bright: false,
     });
 
     if !app.printing {
@@ -641,7 +646,7 @@ fn handle_photo_upload(app: &mut App, raw_bytes: Vec<u8>) -> Task<Message> {
 }
 
 /// Handle a strip photo (no cut) — for photo booth sequences.
-fn handle_strip_photo(app: &mut App, raw_bytes: Vec<u8>, feed_lines: u8) -> Task<Message> {
+fn handle_strip_photo(app: &mut App, raw_bytes: Vec<u8>, feed_lines: u8, bright: bool) -> Task<Message> {
     let message_id = -(app.upload_photo_count as i64);
 
     app.print_queue.push(QueuedPrint {
@@ -650,6 +655,7 @@ fn handle_strip_photo(app: &mut App, raw_bytes: Vec<u8>, feed_lines: u8) -> Task
         image_bytes: Some(raw_bytes),
         no_cut: true,
         feed_lines,
+        bright,
     });
 
     if !app.printing {
@@ -675,6 +681,7 @@ fn handle_text_print(app: &mut App, text: String, _source: &str) -> Task<Message
         image_bytes: None,
         no_cut: true,
         feed_lines: 3,
+        bright: false,
     });
 
     if !app.printing {
@@ -717,18 +724,19 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
     let image_bytes = job.image_bytes;
     let no_cut = job.no_cut;
     let feed_lines = job.feed_lines;
+    let bright = job.bright;
     let shared = app.shared_conn.clone();
 
     Task::perform(
         async move {
-            connection::print_with_shared(
+            let result = connection::print_with_shared(
                 &shared,
                 printer_info.product_id,
                 printer_info.model_name.clone(),
                 |conn| {
                     if no_cut {
                         if image_bytes.is_some() {
-                            conn.print_image_no_cut(image_bytes.as_deref().unwrap(), feed_lines)
+                            conn.print_image_no_cut(image_bytes.as_deref().unwrap(), feed_lines, bright)
                         } else {
                             conn.print_no_cut(&blocks, max_chars)
                         }
@@ -736,7 +744,16 @@ fn try_print_next_queued(app: &mut App) -> Task<Message> {
                         conn.print_website_message(&blocks, max_chars, image_bytes.as_deref())
                     }
                 },
-            )
+            );
+
+            // Give the printer time to physically finish before the next job.
+            // Without this delay, rapid successive prints cause USB disconnects
+            // because the printer resets its USB bus while still processing raster data.
+            if result.is_ok() {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+
+            result
         },
         move |result| Message::PrintMessageResult { message_id, result },
     )

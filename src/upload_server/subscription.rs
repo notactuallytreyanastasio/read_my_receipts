@@ -5,8 +5,8 @@ pub enum UploadEvent {
     Started(String),
     PhotoReceived(Vec<u8>),
     /// Photo that should print without cutting (for photo strip sequences).
-    /// Second field is feed lines after the image.
-    StripPhotoReceived(Vec<u8>, u8),
+    /// Fields: image bytes, feed lines, indoor brightness boost.
+    StripPhotoReceived(Vec<u8>, u8, bool),
     TextReceived { text: String, source: String },
     Error(String),
 }
@@ -40,7 +40,7 @@ pub fn upload_server(bind_addr: String) -> impl futures::Stream<Item = UploadEve
         while let Some(payload) = rx.recv().await {
             let event = match payload {
                 PrintPayload::Image(bytes) => UploadEvent::PhotoReceived(bytes),
-                PrintPayload::ImageNoCut(bytes, feed) => UploadEvent::StripPhotoReceived(bytes, feed),
+                PrintPayload::ImageNoCut(bytes, feed, bright) => UploadEvent::StripPhotoReceived(bytes, feed, bright),
                 PrintPayload::Text { text, source } => {
                     UploadEvent::TextReceived { text, source }
                 }

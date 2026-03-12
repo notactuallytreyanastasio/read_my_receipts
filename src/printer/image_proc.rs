@@ -43,6 +43,22 @@ pub fn dither_for_thermal(img: &mut GrayImage) {
     thermal_pipeline(img);
 }
 
+/// Indoor-bright thermal pipeline. Forces aggressive gamma lift and gentler
+/// contrast so dim indoor photos come out readable on thermal paper.
+pub fn dither_for_thermal_bright(img: &mut GrayImage) {
+    auto_levels(img);
+    let mean = mean_brightness(img);
+    // Indoor override: always use bright settings regardless of measured brightness
+    let (contrast, gamma) = (1.05_f32, 1.8_f32);
+    tracing::debug!(
+        "Thermal pipeline (INDOOR BRIGHT): mean brightness={mean}, contrast={contrast}, gamma={gamma}"
+    );
+    apply_contrast(img, contrast);
+    apply_gamma(img, gamma);
+    unsharp_mask(img, 0.5);
+    floyd_steinberg_dither(img);
+}
+
 /// Adaptive thermal pipeline. Measures brightness after auto-levels to choose
 /// contrast and gamma parameters — dark images get gentler contrast and more
 /// aggressive gamma lift so shadow detail survives dithering.

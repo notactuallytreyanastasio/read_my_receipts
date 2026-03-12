@@ -122,9 +122,10 @@ impl PrinterConnection {
 
     /// Print an image without cutting — for photo strip sequences.
     /// Sends the image + a small feed, but no cut command.
-    pub fn print_image_no_cut(&mut self, image_bytes: &[u8], extra_feed: u8) -> Result<(), String> {
+    /// If `bright` is true, applies indoor brightness boost before dithering.
+    pub fn print_image_no_cut(&mut self, image_bytes: &[u8], extra_feed: u8, bright: bool) -> Result<(), String> {
         self.printer.init().map_err(|e| e.to_string())?;
-        self.print_image(image_bytes)?;
+        self.print_image_inner(image_bytes, bright)?;
         self.printer
             .feeds(extra_feed)
             .map_err(|e| e.to_string())?
@@ -136,8 +137,10 @@ impl PrinterConnection {
     /// Print an image using ESC/POS bit image commands.
     /// Resizes, applies gamma + Floyd-Steinberg dithering, then sends to printer.
     fn print_image(&mut self, image_bytes: &[u8]) -> Result<(), String> {
-        use escpos::utils::BitImageOption;
+        self.print_image_inner(image_bytes, false)
+    }
 
+    fn print_image_inner(&mut self, image_bytes: &[u8], bright: bool) -> Result<(), String> {
         let img = image::load_from_memory(image_bytes)
             .map_err(|e| format!("Image decode failed: {e}"))?;
 
@@ -148,28 +151,58 @@ impl PrinterConnection {
 
         // Grayscale → gamma correction → Floyd-Steinberg dither
         let mut gray = resized.to_luma8();
-        crate::printer::image_proc::dither_for_thermal(&mut gray);
+        if bright {
+            crate::printer::image_proc::dither_for_thermal_bright(&mut gray);
+        } else {
+            crate::printer::image_proc::dither_for_thermal(&mut gray);
+        }
 
-        // Re-encode as PNG for escpos
-        let dithered = image::DynamicImage::ImageLuma8(gray);
-        let mut buf = std::io::Cursor::new(Vec::new());
-        dithered
-            .write_to(&mut buf, image::ImageFormat::Png)
-            .map_err(|e| format!("PNG encode failed: {e}"))?;
-        let processed = buf.into_inner();
-        tracing::info!(
-            "Dithered image: {}x{}px, {} bytes",
-            dithered.width(),
-            dithered.height(),
-            processed.len()
-        );
+        let width = gray.width() as usize;
+        let height = gray.height() as usize;
+        let width_bytes = (width + 7) / 8;
+        tracing::info!("Dithered image: {width}x{height}px, sending as banded raster");
 
-        let option = BitImageOption::new(Some(512), None, Default::default())
-            .map_err(|e| format!("Image option error: {e}"))?;
+        // Convert 8-bit dithered (0 or 255) to 1-bit packed raster
+        let mut raster = vec![0u8; width_bytes * height];
+        for y in 0..height {
+            for x in 0..width {
+                if gray.get_pixel(x as u32, y as u32)[0] == 0 {
+                    raster[y * width_bytes + x / 8] |= 0x80 >> (x % 8);
+                }
+            }
+        }
 
-        self.printer
-            .bit_image_from_bytes_option(&processed, option)
-            .map_err(|e| format!("Image print failed: {e}"))?;
+        // Send in bands of 24 rows with small delays to avoid overflowing
+        // the printer's ~16KB receive buffer, which causes USB bus resets.
+        const BAND_HEIGHT: usize = 24;
+
+        for band_start in (0..height).step_by(BAND_HEIGHT) {
+            let band_end = (band_start + BAND_HEIGHT).min(height);
+            let band_h = band_end - band_start;
+
+            // GS v 0: print raster bit image
+            let cmd: [u8; 8] = [
+                0x1d, 0x76, 0x30, 0x00,
+                (width_bytes & 0xFF) as u8,
+                ((width_bytes >> 8) & 0xFF) as u8,
+                (band_h & 0xFF) as u8,
+                ((band_h >> 8) & 0xFF) as u8,
+            ];
+            self.printer.custom(&cmd).map_err(|e| format!("Raster cmd failed: {e}"))?;
+
+            let data_start = band_start * width_bytes;
+            let data_end = band_end * width_bytes;
+            self.printer
+                .custom(&raster[data_start..data_end])
+                .map_err(|e| format!("Raster data failed: {e}"))?;
+
+            // Flush each band to USB immediately. The escpos library buffers
+            // all commands until print() — without this, the entire image is
+            // sent in one burst which overflows the printer's receive buffer
+            // and causes a USB bus reset (kernel 6.12+).
+            self.printer.print().map_err(|e| format!("Band flush failed: {e}"))?;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
 
         Ok(())
     }

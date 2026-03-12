@@ -6,7 +6,7 @@
 #     deploy         Build + restart (full redeploy)
 #
 #   Process Management
-#     start          Start the kiosk GUI (DISPLAY=:0) on port 80
+#     start          Start the GUI (DISPLAY=:0) on port 80
 #     start-headless Start headless server (no GUI) on port 80
 #     stop           Stop all receipts processes
 #     restart        Stop then start
@@ -49,7 +49,7 @@ help:
 	@echo "  deploy         Build + restart"
 	@echo ""
 	@echo "Process Management:"
-	@echo "  start          Start kiosk GUI on port 80"
+	@echo "  start          Start GUI on port 80"
 	@echo "  start-headless Start headless server on port 80"
 	@echo "  stop           Stop all receipts processes"
 	@echo "  restart        Stop + start"
@@ -85,6 +85,15 @@ deploy: build restart
 
 # ---------------------------------------------------------------------------
 # Process Management
+#
+# IMPORTANT: Do NOT create a systemd service for receipts. A previous
+# receipt-printer.service (Xvfb + --kiosk on DISPLAY=:99) caused phantom
+# USB access that produced partial prints. The fix was deleting it entirely.
+# Also keep CUPS and ModemManager disabled — both probe the USB printer.
+#
+# The receipts binary must run on the real display (DISPLAY=:0) and be the
+# ONLY process accessing the Epson USB printer.
+# Do NOT use --kiosk flag — kiosk mode is deprecated.
 # ---------------------------------------------------------------------------
 
 start:
@@ -92,7 +101,7 @@ start:
 		echo "Already running (PID $$(pgrep -f 'target/release/receipts'))"; \
 		exit 1; \
 	fi
-	DISPLAY=:0 $(RECEIPTS) --kiosk >> $(LOG) 2>&1 &
+	DISPLAY=:0 $(RECEIPTS) >> $(LOG) 2>&1 &
 	@sleep 2
 	@if ss -tlnp | grep -q ':80 '; then \
 		echo "Started (PID $$(pgrep -f 'target/release/receipts'), port 80)"; \

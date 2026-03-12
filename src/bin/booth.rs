@@ -2,11 +2,17 @@
 //!
 //! Designed to be spawned by the web server. Manages the display,
 //! camera, and print pipeline as a standalone process.
+//!
+//! Pass `--indoor` for brighter capture settings (higher EV, longer exposure).
 
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    let indoor = std::env::args().any(|a| a == "--indoor");
+    let mode_label = if indoor { "indoor" } else { "outdoor" };
+    eprintln!("[booth] Mode: {mode_label}");
+
     let pics_dir = pics_dir();
     std::fs::create_dir_all(&pics_dir).unwrap_or_else(|e| {
         eprintln!("Cannot create {}: {e}", pics_dir.display());
@@ -19,6 +25,10 @@ fn main() {
     eprintln!("[booth] Stopping camera preview...");
     let _ = Command::new("pkill").args(["-f", "rpicam-hello"]).status();
     std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Camera settings based on mode
+    let ev = if indoor { "2.0" } else { "0.5" };
+    let shutter = if indoor { "100000" } else { "50000" }; // microseconds
 
     // Step 2: Countdown + 3 photos
     let mut photos: Vec<PathBuf> = Vec::new();
@@ -34,16 +44,22 @@ fn main() {
         let filename = now.format(&format!("%Y%m%d_%H%M%S_{}.jpg", i + 1)).to_string();
         let output_path = pics_dir.join(&filename);
 
-        eprintln!("[booth] Capturing photo {}...", i + 1);
+        eprintln!("[booth] Capturing photo {} (ev={ev}, shutter={shutter}us)...", i + 1);
+        let mut args = vec![
+            "-o", output_path.to_str().unwrap(),
+            "--width", "4056",
+            "--height", "3040",
+            "-t", "500",
+            "--nopreview",
+            "--ev", ev,
+        ];
+        // Indoor: set minimum shutter speed for brighter capture
+        if indoor {
+            args.extend(["--shutter", shutter]);
+        }
+
         let status = Command::new("rpicam-still")
-            .args([
-                "-o", output_path.to_str().unwrap(),
-                "--width", "4056",
-                "--height", "3040",
-                "-t", "500",
-                "--nopreview",
-                "--ev", "0.5",
-            ])
+            .args(&args)
             .status();
 
         match status {
@@ -72,7 +88,8 @@ fn main() {
     }
 
     // Step 3: Print all 3 via /print/strip (no cuts)
-    eprintln!("[booth] Printing {} photos as strip (no cuts)...", photos.len());
+    let bright_param = if indoor { "&bright=1" } else { "" };
+    eprintln!("[booth] Printing {} photos as strip (no cuts, {mode_label})...", photos.len());
     for (i, photo) in photos.iter().enumerate() {
         let bytes = match std::fs::read(photo) {
             Ok(b) => b,
@@ -84,7 +101,7 @@ fn main() {
 
         // Extra feed after last photo so the tear doesn't cut into the image
         let feed = if i == photos.len() - 1 { 10 } else { 3 };
-        let url = format!("http://localhost:{port}/print/strip?feed={feed}");
+        let url = format!("http://localhost:{port}/print/strip?feed={feed}{bright_param}");
         let boundary = "----boothboundary";
         let mut body = Vec::new();
         body.extend_from_slice(

@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 pub enum PrintPayload {
     Image(Vec<u8>),
     /// Image printed without cutting — for photo strip sequences.
-    /// Second field is feed lines after the image.
-    ImageNoCut(Vec<u8>, u8),
+    /// Fields: image bytes, feed lines, indoor brightness boost.
+    ImageNoCut(Vec<u8>, u8, bool),
     Text { text: String, source: String },
 }
 
@@ -61,8 +61,15 @@ struct TextParams {
 }
 
 #[derive(Deserialize)]
+struct ShootParams {
+    mode: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct StripParams {
     feed: Option<u8>,
+    /// If set, apply indoor brightness boost to the thermal print pipeline.
+    bright: Option<u8>,
 }
 
 /// POST /print/text?source=phx.server — accept plain text body and queue for printing.
@@ -159,6 +166,7 @@ async fn upload_strip(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let feed = params.feed.unwrap_or(3);
+    let bright = params.bright.unwrap_or(0) > 0;
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         if name == "image" {
@@ -171,10 +179,10 @@ async fn upload_strip(
             if bytes.is_empty() {
                 return (StatusCode::BAD_REQUEST, "Empty file".to_string());
             }
-            tracing::info!("Strip photo received: {} bytes", bytes.len());
+            tracing::info!("Strip photo received: {} bytes (bright={})", bytes.len(), bright);
             if state
                 .tx
-                .send(PrintPayload::ImageNoCut(bytes, feed))
+                .send(PrintPayload::ImageNoCut(bytes, feed, bright))
                 .await
                 .is_err()
             {
@@ -212,9 +220,10 @@ async fn booth_preview() -> impl IntoResponse {
     (StatusCode::OK, "Preview starting".to_string())
 }
 
-/// POST /booth/shoot — run the photo booth sequence (countdown → 1 photo → print).
+/// POST /booth/shoot — run the photo booth sequence (countdown → 3 photos → print strip).
 /// Spawns the booth binary as a detached process and returns immediately.
-async fn booth_shoot() -> impl IntoResponse {
+/// Optional query param: ?mode=indoor (passes --indoor to booth binary)
+async fn booth_shoot(Query(params): Query<ShootParams>) -> impl IntoResponse {
     // Find the booth binary next to this binary
     let booth_path = std::env::current_exe()
         .ok()
@@ -228,8 +237,14 @@ async fn booth_shoot() -> impl IntoResponse {
         );
     }
 
+    let indoor = params.mode.as_deref() == Some("indoor");
+    let mut args = vec![booth_path.to_str().unwrap().to_string()];
+    if indoor {
+        args.push("--indoor".to_string());
+    }
+
     let result = std::process::Command::new("setsid")
-        .args([booth_path.to_str().unwrap()])
+        .args(&args)
         .env("DISPLAY", ":0")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -468,7 +483,8 @@ h1{font-size:28px;margin-bottom:6px}
 .btn{display:block;width:100%;padding:16px;border:none;border-radius:10px;font-size:17px;font-weight:600;cursor:pointer;margin-bottom:12px}
 .btn:disabled{opacity:.3;cursor:not-allowed}
 .btn-preview{background:#333;color:#fff}
-.btn-shoot{background:#fff;color:#000}
+.btn-shoot{background:#fff;color:#000;flex:1}
+.shoot-row{display:flex;gap:12px;margin-bottom:12px}
 .status{margin-top:16px;padding:12px;border-radius:8px;font-size:14px;text-align:center;display:none}
 .status.ok{background:#1a3a2a;color:#4a9;display:block}
 .status.err{background:#3a1a1a;color:#e55;display:block}
@@ -481,13 +497,17 @@ h1{font-size:28px;margin-bottom:6px}
 <p class="sub">3 photos, printed as a strip</p>
 
 <button class="btn btn-preview" id="preview-btn">Start Preview</button>
-<button class="btn btn-shoot" id="shoot-btn" disabled>Take Photos</button>
+<div class="shoot-row">
+<button class="btn btn-shoot" id="indoor-btn" disabled>Indoor</button>
+<button class="btn btn-shoot" id="outdoor-btn" disabled>Outdoor</button>
+</div>
 <div id="status" class="status"></div>
 </div>
 
 <script>
 const previewBtn=document.getElementById('preview-btn'),
-  shootBtn=document.getElementById('shoot-btn'),
+  indoorBtn=document.getElementById('indoor-btn'),
+  outdoorBtn=document.getElementById('outdoor-btn'),
   status=document.getElementById('status');
 
 let shooting=false;
@@ -501,9 +521,10 @@ previewBtn.addEventListener('click',async()=>{
     const r=await fetch('/booth/preview',{method:'POST'});
     if(r.ok){
       previewBtn.textContent='Preview Running';
-      shootBtn.disabled=false;
+      indoorBtn.disabled=false;
+      outdoorBtn.disabled=false;
       status.className='status ok';
-      status.textContent='Position yourself and hit Take Photos!';
+      status.textContent='Position yourself and choose Indoor or Outdoor!';
     }else{
       const t=await r.text();
       status.className='status err';
@@ -519,23 +540,23 @@ previewBtn.addEventListener('click',async()=>{
   }
 });
 
-shootBtn.addEventListener('click',async()=>{
+async function shoot(mode){
   if(shooting)return;
   shooting=true;
-  shootBtn.disabled=true;
-  shootBtn.textContent='Shooting...';
+  indoorBtn.disabled=true;
+  outdoorBtn.disabled=true;
   status.className='status wait';
   status.textContent='Get ready! Countdown starting on screen...';
   try{
-    const r=await fetch('/booth/shoot',{method:'POST'});
+    const r=await fetch('/booth/shoot?mode='+mode,{method:'POST'});
     if(r.ok){
       status.className='status wait';
       status.textContent='Photos being taken and printed... hold tight!';
       setTimeout(()=>{
         status.className='status ok';
         status.textContent='Strip printed! Check the printer.';
-        shootBtn.textContent='Take Photos';
-        shootBtn.disabled=false;
+        indoorBtn.disabled=false;
+        outdoorBtn.disabled=false;
         previewBtn.disabled=false;
         previewBtn.textContent='Start Preview';
         shooting=false;
@@ -544,18 +565,20 @@ shootBtn.addEventListener('click',async()=>{
       const t=await r.text();
       status.className='status err';
       status.textContent='Error: '+t;
-      shootBtn.disabled=false;
-      shootBtn.textContent='Take Photos';
+      indoorBtn.disabled=false;
+      outdoorBtn.disabled=false;
       shooting=false;
     }
   }catch(e){
     status.className='status err';
     status.textContent='Connection failed';
-    shootBtn.disabled=false;
-    shootBtn.textContent='Take Photos';
+    indoorBtn.disabled=false;
+    outdoorBtn.disabled=false;
     shooting=false;
   }
-});
+}
+indoorBtn.addEventListener('click',()=>shoot('indoor'));
+outdoorBtn.addEventListener('click',()=>shoot('outdoor'));
 </script>
 </body>
 </html>"#;
